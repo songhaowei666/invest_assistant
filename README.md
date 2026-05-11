@@ -1,22 +1,30 @@
 # invest_assistant
 
-攒股收息相关的投资助手项目：服务端为 FastAPI（持仓、AI 修改提案等），前端为 React + Vite。
+面向 A 股场景的投资助手项目，包含持仓管理、投资助手对话、投研数问（自然语言转 SQL）三大功能模块。
+
+## 功能概览
+
+- 持仓管理：持仓列表查询、批量新增/删除/修改、股票名称联想、按代码查询价格和股息率
+- 投资助手：基于会话的流式对话（SSE）
+- 投研数问：自然语言问题转 SQL，返回查询结果与中文总结，并支持会话管理
+- 前后端分离：后端 FastAPI + SQLAlchemy，前端 React + Vite
 
 ## 目录结构
 
-- `api/`：Python 服务（FastAPI、SQLAlchemy、SQLite 默认）；路由在 `api/controllers/`（按版本分子目录，如 `v1/`）
-- `web/`：React 前端（Vite 开发服务器默认 `http://localhost:5173`）
+- `api/`：后端服务代码（控制器、服务、模型、AI 流程、脚本）
+- `web/`：前端页面与交互（持仓数据/投资助手/投研数问）
+- `scripts/`：项目级启动脚本（`start-api.sh`、`start-web.sh`）
+- `docs/`：API 文档、规格文档、页面说明
 
-## 环境要求
+## 运行环境
 
 - Python 3.10+（建议 3.11）
 - Node.js 18+（建议 LTS）
+- PostgreSQL（默认配置为 PostgreSQL 连接）
 
-## 服务端（api）
+## 快速启动
 
-### 依赖安装
-
-在 `api` 目录下建议使用虚拟环境：
+### 1) 后端依赖安装（`api/`）
 
 ```bash
 cd api
@@ -25,63 +33,112 @@ source .venv/bin/activate
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
 ```
 
-### 环境变量（可选）
-
-在 `api/.env` 中可配置，例如：
-
-- `OPENAI_API_KEY`：调用大模型时使用
-- `DATABASE_URL`：默认 `sqlite:///./invest_assistant.db`
-- `API_PREFIX`：默认 `/api/v1`
-
-### 启动
-
-从仓库根目录执行：
-
-```bash
-./scripts/start-api.sh
-```
-
-或手动：
-
-```bash
-cd api
-source .venv/bin/activate   # 若已创建虚拟环境
-python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-启动后接口根路径为 `http://127.0.0.1:8000`，健康检查：`GET http://127.0.0.1:8000/health`。
-
-## 前端（web）
-
-### 依赖安装
+### 2) 前端依赖安装（`web/`）
 
 ```bash
 cd web
 npm install
 ```
 
-### 启动
+### 3) 启动后端
 
-从仓库根目录执行：
+在仓库根目录执行：
+
+```bash
+./scripts/start-api.sh
+```
+
+后端默认地址：`http://127.0.0.1:8000`  
+健康检查：`GET /health`
+
+### 4) 启动前端
+
+在仓库根目录执行：
 
 ```bash
 ./scripts/start-web.sh
 ```
 
-或手动：
+前端默认地址：`http://localhost:5173`
+
+## 环境变量说明（`api/.env`）
+
+后端通过 `api/configs/config.py` 读取配置，核心变量如下：
+
+- `OPENAI_API_KEY`：必填
+- `DASHSCOPE_API_KEY`：必填
+- `OPENAI_MODEL`：默认 `gpt-4o-mini`
+- `OPENAI_BASE_URL`：默认 `https://api.openai.com/v1`
+- `DASHSCOPE_BASE_URL`：默认 `https://api.dashscope.aliyuncs.com/compatible-mode/v1`
+- `API_PREFIX`：默认 `/api/v1`
+- `DATABASE_URL`：可选，设置后优先使用
+- `DB_TYPE`、`DB_USERNAME`、`DB_PASSWORD`、`DB_HOST`、`DB_PORT`、`DB_DATABASE`：未设置 `DATABASE_URL` 时用于拼接 PostgreSQL 连接串
+
+说明：当前配置未设置 `DATABASE_URL` 时仅支持 `postgresql` 类型。
+
+## 前端页面说明
+
+`web` 顶部导航包含 3 个页面：
+
+- `持仓数据`：对应持仓管理接口
+- `投资助手`：对应 `/bot/*` 会话与流式聊天接口
+- `投研数问`：对应 `/sql-copilot/*` 会话与问答接口
+
+前端默认请求后端地址为：`http://localhost:8000/api/v1`。
+
+## API 入口
+
+后端统一前缀默认：`/api/v1`。主要接口分组：
+
+- `positions`：`/positions`、`/positions/add`、`/positions/delete`、`/positions/modify`
+- `bot`：`/bot/sessions/list`、`/bot/sessions/history`、`/bot/sessions/delete`、`/bot/chat`
+- `sql-copilot`：`/sql-copilot/chat`、`/sql-copilot/query-scope`、`/sql-copilot/sessions/*`
+
+## 文档索引
+
+- `docs/api/positions-api.md`：持仓接口文档
+- `docs/api/bot--api.md`：投资助手（Bot）接口文档
+- `docs/api/sql-copilot-api.md`：投研数问接口文档
+- `docs/web/投研数问.md`：投研数问前端页面说明
+- `前端.spec.md`：前端需求说明
+- `后端接口文档.md`：后端接口补充文档
+
+## 提交到 GitHub 远程仓库
+
+远程仓库地址：  
+`https://github.com/songhaowei666/invest_assistant.git`
+
+在仓库根目录执行：
 
 ```bash
-cd web
-npm run dev
+cd /home/song/github_clone/invest_assistant
+git status
+git add .
+git commit -m "初始化项目代码"
 ```
 
-默认开发地址：`http://localhost:5173`（与服务端 CORS 配置一致）。
+### 配置远程地址
 
-## 同时开发
+若本地未配置 `origin`：
 
-先启动服务端，再启动 Web；两个终端分别运行 `./scripts/start-api.sh` 与 `./scripts/start-web.sh` 即可。
+```bash
+git remote add origin https://github.com/songhaowei666/invest_assistant.git
+```
 
-## 其他文档
+若 `origin` 已存在，更新地址：
 
-- `前端.spec.md`：前端原型需求说明
-- `后端接口文档.md`：HTTP 接口说明（若存在）
+```bash
+git remote set-url origin https://github.com/songhaowei666/invest_assistant.git
+```
+
+### 首次推送
+
+```bash
+git branch -M main
+git push -u origin main
+```
+
+### 常见问题
+
+- 认证失败：请使用 GitHub Token（不是账号密码）
+- 敏感文件（如 `.env`）被暂存：先确认根目录 `.gitignore` 已生效，再重新执行 `git add .`
