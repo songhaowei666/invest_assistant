@@ -1,0 +1,74 @@
+# =========================
+# 环境变量与敏感信息
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Python 运行与缓存产物
+# =========================
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.venv/
+venv/
+
+# =========================
+# 构建与测试覆盖率产物
+# =========================
+build/
+dist/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# =========================
+# 前端依赖与构建缓存
+# =========================
+node_modules/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# =========================
+# 日志与临时文件
+# =========================
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# =========================
+# 编辑器与本地配置
+# =========================
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+*~
+
+# =========================
+# 操作系统生成文件
+# =========================
+.DS_Store
+Thumbs.db
+Desktop.ini
+后端接口文档.md
+前端.spec.md
+
+ai_code_prompts/
+api/invest_assistant.db
+.nanobot/
+api/core/akshare/data/
+api/data/vanna_stock/
+api/tests/test_invest_assistant.db

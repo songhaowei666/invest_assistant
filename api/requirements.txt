@@ -1,0 +1,12 @@
+akshare
+fastapi
+uvicorn
+sqlalchemy
+pydantic-settings
+langchain
+langgraph
+langchain-openai
+openai
+vanna
+chromadb
+mem0ai
