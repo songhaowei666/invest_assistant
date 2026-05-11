@@ -37,6 +37,7 @@ node_modules/
 .vite/
 coverage/
 *.tsbuildinfo
+nanobot_example/
 
 # =========================
 # 日志与临时文件
