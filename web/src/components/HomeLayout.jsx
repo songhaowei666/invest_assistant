@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import EarningsLensLayout from './EarningsLensLayout'
 import InvestAssistantLayout from './InvestAssistantLayout'
 import ResearchQaLayout from './ResearchQaLayout'
 import StockList from './StockList'
@@ -87,6 +88,13 @@ function HomeLayout() {
           </button>
           <button
             type="button"
+            className={`top-nav__item top-nav__item--clickable ${activePage === 'earnings-lens' ? 'top-nav__item--active' : ''}`}
+            onClick={() => setActivePage('earnings-lens')}
+          >
+            透视盈余
+          </button>
+          <button
+            type="button"
             className={`top-nav__item top-nav__item--clickable ${activePage === 'assistant' ? 'top-nav__item--active' : ''}`}
             onClick={() => setActivePage('assistant')}
           >
@@ -101,7 +109,9 @@ function HomeLayout() {
           </button>
         </div>
       </nav>
-      <main className={`home-layout ${activePage !== 'stocks' ? 'home-layout--assistant' : ''}`}>
+      <main
+        className={`home-layout ${activePage !== 'stocks' && activePage !== 'earnings-lens' ? 'home-layout--assistant' : ''} ${activePage === 'earnings-lens' ? 'home-layout--earnings-lens' : ''}`}
+      >
         {activePage === 'stocks' ? (
           <>
             {isLoading ? <p className="status-text">加载中...</p> : null}
@@ -115,6 +125,7 @@ function HomeLayout() {
             />
           </>
         ) : null}
+        {activePage === 'earnings-lens' ? <EarningsLensLayout apiBase={API_BASE} /> : null}
         {activePage === 'assistant' ? (
           <InvestAssistantLayout apiBase={API_BASE} />
         ) : null}

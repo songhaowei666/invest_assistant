@@ -45,6 +45,25 @@ class PositionsListApiTestCase(unittest.TestCase):
         self.assertIn("totalDividend", first)
         self.assertNotIn("annualDividend", first)
 
+    def test_earnings_lens_returns_rows_and_summary(self) -> None:
+        response = self.client.get("/api/v1/earnings-lens")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("summary", payload)
+        self.assertIn("mcWeighted", payload)
+        self.assertIn("rows", payload)
+        self.assertIn("totalMarketValue", payload["mcWeighted"])
+        self.assertIn("positionCount", payload["summary"])
+        self.assertIn("withBasicSnapshotCount", payload["summary"])
+        self.assertGreaterEqual(payload["summary"]["positionCount"], 5)
+        self.assertGreaterEqual(len(payload["rows"]), 5)
+        first = payload["rows"][0]
+        self.assertIn("code", first)
+        self.assertIn("name", first)
+        self.assertIn("snapshot", first)
+        self.assertIn("annualReports", first)
+        self.assertIsInstance(first["annualReports"], list)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,8 @@
 
 本文档依据 `api/controllers/positions.py` 及 `api/schemas/position.py` 整理。全局路由前缀来自配置项 `API_PREFIX`，默认值为 **`/api/v1`**（见 `api/configs/config.py`）。下列 Path 均为该前缀之后的相对路径。
 
+**相关只读接口**：按当前持仓聚合「透视盈余」（快照、年报、市值加权组合指标）见独立模块 [`earnings-lens-api.md`](./earnings-lens-api.md)（`GET /api/v1/earnings-lens`），不在本文档 Path 下。
+
 基准示例：`http://localhost:8000` + Path。
 
 ---
@@ -184,7 +186,7 @@ GET /api/v1/positions/stock-name-suggest?keyword=茅台&limit=10
 ## 6. 按股票代码查询价格与股息率
 
 - **Method / Path**：`GET /api/v1/positions/price-dividend`
-- **说明**：根据股票代码，从持仓表（`positions`）中查询该股票的当前价格与股息率。
+- **说明**：根据股票代码，从 `stock_basic_info` 表查询该代码的当前价格与股息率（`code` 须在该表中存在；与持仓表是否录入该代码无关）。
 - **请求参数（Query）**
 
 | 参数 | 类型 | 必填 | 默认值 | 约束 | 说明 |

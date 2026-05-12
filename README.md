@@ -1,10 +1,11 @@
 # invest_assistant
 
-面向 A 股场景的投资助手项目，包含持仓管理、投资助手对话、投研数问（自然语言转 SQL）三大功能模块。
+面向 A 股场景的投资助手项目，包含持仓管理、透视盈余、投资助手对话、投研数问（自然语言转 SQL）等功能模块。
 
 ## 功能概览
 
-- 持仓管理：持仓列表查询、批量新增/删除/修改、股票名称联想、按代码查询价格和股息率
+- 持仓管理：持仓列表查询、批量新增/删除/修改、股票名称联想、按代码查询价格与股息率（数据来自 `stock_basic_info`）
+- 透视盈余：按当前持仓关联估值快照与年报，并提供按市值加权的组合透视指标（独立接口 `GET /earnings-lens`，见 `docs/api/earnings-lens-api.md`）
 - 投资助手：基于会话的流式对话（SSE）
 - 投研数问：自然语言问题转 SQL，返回查询结果与中文总结，并支持会话管理
 - 前后端分离：后端 FastAPI + SQLAlchemy，前端 React + Vite
@@ -12,7 +13,7 @@
 ## 目录结构
 
 - `api/`：后端服务代码（控制器、服务、模型、AI 流程、脚本）
-- `web/`：前端页面与交互（持仓数据/投资助手/投研数问）
+- `web/`：前端页面与交互（持仓数据/透视盈余/投资助手/投研数问）
 - `scripts/`：项目级启动脚本（`start-api.sh`、`start-web.sh`）
 - `docs/`：API 文档、规格文档、页面说明
 
@@ -78,9 +79,10 @@ npm install
 
 ## 前端页面说明
 
-`web` 顶部导航包含 3 个页面：
+`web` 顶部导航包含 4 个页面：
 
-- `持仓数据`：对应持仓管理接口
+- `持仓数据`：对应 `positions` 下列表与增删改等接口
+- `透视盈余`：对应 `GET /earnings-lens`；展示每行快照与年报摘要，以及 `mcWeighted` 市值加权组合指标（缺失市值按 0、无样本时加权为 0）
 - `投资助手`：对应 `/bot/*` 会话与流式聊天接口
 - `投研数问`：对应 `/sql-copilot/*` 会话与问答接口
 
@@ -90,13 +92,15 @@ npm install
 
 后端统一前缀默认：`/api/v1`。主要接口分组：
 
-- `positions`：`/positions`、`/positions/add`、`/positions/delete`、`/positions/modify`
+- `positions`：`GET /positions`、`POST /positions/add`、`POST /positions/delete`、`POST /positions/modify`、`GET /positions/stock-name-suggest`、`GET /positions/price-dividend`
+- `earnings-lens`：`GET /earnings-lens`（独立控制器，详见 `docs/api/earnings-lens-api.md`）
 - `bot`：`/bot/sessions/list`、`/bot/sessions/history`、`/bot/sessions/delete`、`/bot/chat`
 - `sql-copilot`：`/sql-copilot/chat`、`/sql-copilot/query-scope`、`/sql-copilot/sessions/*`
 
 ## 文档索引
 
 - `docs/api/positions-api.md`：持仓接口文档
+- `docs/api/earnings-lens-api.md`：透视盈余接口文档
 - `docs/api/bot--api.md`：投资助手（Bot）接口文档
 - `docs/api/sql-copilot-api.md`：投研数问接口文档
 - `docs/web/投研数问.md`：投研数问前端页面说明
