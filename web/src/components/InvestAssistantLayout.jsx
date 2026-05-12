@@ -203,8 +203,14 @@ export default function InvestAssistantLayout({ apiBase }) {
     }
   }
 
-  const handleSend = async () => {
-    const text = draft.trim()
+  /**
+   * 发送一条消息。
+   * - 不传参数：使用输入框 draft（兼容原有 Enter 发送 / 点击发送按钮路径）
+   * - 传入 overrideText：用按钮等"快速回复"方式直接发送指定文本，不动 draft
+   */
+  const handleSend = async (overrideText) => {
+    const sourceText = typeof overrideText === 'string' ? overrideText : draft
+    const text = sourceText.trim()
     if (!text || !selectedKey || isStreaming) return
 
     abortRef.current?.abort()
@@ -213,7 +219,9 @@ export default function InvestAssistantLayout({ apiBase }) {
 
     const keySnapshot = selectedKey
 
-    setDraft('')
+    if (typeof overrideText !== 'string') {
+      setDraft('')
+    }
     setStreamError('')
     const assistantId = `asst-${Date.now()}`
     setMessages((prev) => [
@@ -222,6 +230,10 @@ export default function InvestAssistantLayout({ apiBase }) {
       { id: assistantId, role: 'assistant', content: '', hasTool: false },
     ])
     setIsStreaming(true)
+
+    // 本轮是否触发了 ask_user：若触发，会话此刻在等用户回答，需要保留本地的临时
+    // assistant 消息（带 askOptions）以便渲染按钮；不能用服务端历史覆盖，否则按钮会瞬间消失
+    let askUserPending = false
 
     try {
       await streamBotChat(apiBase, keySnapshot, text, {
@@ -237,9 +249,26 @@ export default function InvestAssistantLayout({ apiBase }) {
             return next
           })
         },
+        onAskUser: (options) => {
+          // 收到 ask_user 候选项：把选项挂到当前流式 assistant 消息上，UI 渲染为按钮
+          askUserPending = true
+          setMessages((prev) => {
+            const next = [...prev]
+            const idx = next.findIndex((m) => m.id === assistantId)
+            if (idx !== -1) {
+              const row = next[idx]
+              next[idx] = { ...row, askOptions: options }
+            }
+            return next
+          })
+        },
       })
       await refreshSessions()
-      await syncHistoryFromServer(keySnapshot)
+      // 仅在没有触发 ask_user 时同步服务端历史；ask_user 期间保留本地 askOptions 用于按钮渲染，
+      // 等用户点击按钮发起下一轮（pending_ask_user_id 把它当作工具结果回填）后再同步
+      if (!askUserPending) {
+        await syncHistoryFromServer(keySnapshot)
+      }
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
         await syncHistoryFromServer(keySnapshot)
@@ -332,6 +361,31 @@ export default function InvestAssistantLayout({ apiBase }) {
                   <div className="invest-assistant__bubble-content">
                     <MessageContent content={m.content} />
                   </div>
+                  {m.role === 'assistant' && Array.isArray(m.askOptions) && m.askOptions.length > 0 ? (
+                    <div
+                      className="invest-assistant__ask-options"
+                      style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}
+                    >
+                      {m.askOptions.map((opt) => (
+                        <button
+                          key={opt}
+                          type="button"
+                          className="invest-assistant__ask-option"
+                          disabled={isStreaming}
+                          onClick={() => void handleSend(opt)}
+                          style={{
+                            padding: '4px 12px',
+                            borderRadius: 16,
+                            border: '1px solid #888',
+                            background: isStreaming ? '#eee' : '#f7f7f7',
+                            cursor: isStreaming ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          {opt}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>

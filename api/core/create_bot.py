@@ -45,11 +45,11 @@ def build_bot() -> Nanobot:
     #     sys.exit(1)
 
     config = load_config(WORKSPACE /  "config.json")
-    config.providers.custom.api_key = openai_api_key
-    config.providers.custom.api_base = settings.DASHSCOPE_BASE_URL
+    config.providers.custom.api_key = settings.OPENAI_API_KEY
+    config.providers.custom.api_base = settings.OPENAI_BASE_URL
     config.agents.defaults.workspace = str(WORKSPACE)
-
-    config.agents.defaults.model = "qwen3.5-plus"
+# config.agents.defaults.model = "qwen3.5-plus"
+    config.agents.defaults.model = "gpt-4-turbo"
     config.agents.defaults.provider = "custom"
     # mcp_servers = dict(config.tools.mcp_servers or {})
     # tavily_mcp = mcp_servers.get("tavily-mcp")

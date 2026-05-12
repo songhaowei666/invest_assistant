@@ -6,7 +6,10 @@ from typing import Any
 from nanobot_main.agent.tools.base import Tool, tool_parameters
 from nanobot_main.agent.tools.schema import ArraySchema, StringSchema, tool_parameters_schema
 
-STRUCTURED_BUTTON_CHANNELS = frozenset({"telegram", "websocket"})
+# 支持结构化按钮的通道列表：这些通道会通过 OutboundMessage.buttons 单独传递候选项，
+# 不再把候选项拼接到回复文本里。其它通道（如 slack 等）仍走"问题文本 + 编号列表"的兜底形态。
+# api：FastAPI 的 SSE 通道，由前端解析 OutboundMessage.buttons 后渲染为按钮。
+STRUCTURED_BUTTON_CHANNELS = frozenset({"telegram", "websocket", "api"})
 
 
 class AskUserInterrupt(BaseException):

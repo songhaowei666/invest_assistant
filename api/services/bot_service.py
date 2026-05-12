@@ -50,6 +50,37 @@ def _sse_chunk(delta: str, model: str, chunk_id: str, finish_reason: str | None 
 _SSE_DONE = b"data: [DONE]\n\n"
 
 
+def _flatten_button_rows(rows: Any) -> list[str]:
+    """将 OutboundMessage.buttons 的二维结构（如 [["是","否"]]）压平为一维选项列表。
+
+    nanobot_main 的 ask_user_outbound 在结构化按钮通道下会返回 buttons=[options]，
+    api 通道暂只用一维选项渲染，这里做一次扁平化以方便前端消费。
+    """
+    if not rows or not isinstance(rows, list):
+        return []
+    flat: list[str] = []
+    for row in rows:
+        if isinstance(row, list):
+            for cell in row:
+                if isinstance(cell, str) and cell:
+                    flat.append(cell)
+    return flat
+
+
+def _sse_event_ask_user(options: list[str]) -> bytes:
+    """构造 ask_user 候选项的自定义 SSE 事件帧。
+
+    与 OpenAI 兼容的 chunk 帧（默认 event 名为 message）相互独立：
+    使用 event: ask_user 行让监听该事件的前端拿到 options 用于渲染按钮，
+    未监听该事件的客户端会自动忽略，向后兼容。
+    """
+    payload = {"options": options}
+    return (
+        f"event: ask_user\n"
+        f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    ).encode("utf-8")
+
+
 async def ensure_nanobot() -> Any:
     """懒加载单例。"""
     global _nanobot
@@ -153,6 +184,8 @@ async def chat_sse_tokens(key: str, content: str) -> AsyncIterator[bytes]:
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     stream_failed = False
     emitted_content = False
+    # 保存 process_direct 返回的 OutboundMessage，供 token 流结束后取 buttons
+    response_holder: dict[str, Any] = {}
 
     async def _on_stream(token: str) -> None:
         nonlocal emitted_content
@@ -190,6 +223,8 @@ async def chat_sse_tokens(key: str, content: str) -> AsyncIterator[bytes]:
                     text = (getattr(response, "content", None) or str(response or "")) or ""
                     if text.strip():
                         await queue.put(text)
+                # 暂存 OutboundMessage，供外层在 token 流结束后取 buttons 等元数据
+                response_holder["value"] = response
         except Exception:
             stream_failed = True
         finally:
@@ -209,5 +244,11 @@ async def chat_sse_tokens(key: str, content: str) -> AsyncIterator[bytes]:
                 await task
 
     if not stream_failed:
+        # 若本轮以 ask_user 工具中断，OutboundMessage.buttons 会带回候选项；
+        # 在 finish 帧之前以独立的 SSE event（event: ask_user）下发，便于前端渲染按钮。
+        response = response_holder.get("value")
+        options = _flatten_button_rows(getattr(response, "buttons", None) if response is not None else None)
+        if options:
+            yield _sse_event_ask_user(options)
         yield _sse_chunk("", str(model_name), chunk_id, finish_reason="stop")
         yield _SSE_DONE
