@@ -1,4 +1,14 @@
-"""Memory system: pure file I/O store, lightweight Consolidator, and Dream processor."""
+"""Memory system: PostgreSQL backed store, lightweight Consolidator, and Dream processor.
+
+存储层已从 workspace 下的 SOUL.md / USER.md / memory/MEMORY.md / memory/history.jsonl
+/ memory/.cursor / memory/.dream_cursor 改为 PostgreSQL（按 user_id 隔离）。
+
+行龄注解（line_ages）原本依赖 GitStore 对 MEMORY.md 的 git blame；现在直接读
+PG 中 nanobot_memory_md.updated_at 计算"距今天数"，与 git auto-commit 解耦。
+
+MemoryStore 的接口签名保持不变，仅替换底层 I/O；workspace 参数仍接收以兼容 Dream
+phase 2 把 PG 内容临时落盘后让文件类工具读写的流程（详见 Dream.run）。
+"""
 
 from __future__ import annotations
 
@@ -27,6 +37,9 @@ from nanobot_main.utils.helpers import (
 )
 from nanobot_main.utils.prompt_templates import render_template
 
+from core.user_context import get_user_id  # noqa: E402
+from repositories.nanobot_memory_repo import NanobotMemoryRepo  # noqa: E402
+
 if TYPE_CHECKING:
     from nanobot_main.providers.base import LLMProvider
     from nanobot_main.session.manager import Session, SessionManager
@@ -49,7 +62,9 @@ class MemoryStore:
     def __init__(self, workspace: Path, max_history_entries: int = _DEFAULT_MAX_HISTORY):
         self.workspace = workspace
         self.max_history_entries = max_history_entries
-        self.memory_dir = ensure_dir(workspace / "memory")
+        # 旧版文件路径属性保留为兼容字段，仅供 Dream phase 2 临时落盘时使用，
+        # 实际持久化全部走 PG 仓库。
+        self.memory_dir = workspace / "memory"
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "history.jsonl"
         self.legacy_history_file = self.memory_dir / "HISTORY.md"
@@ -57,11 +72,16 @@ class MemoryStore:
         self.user_file = workspace / "USER.md"
         self._cursor_file = self.memory_dir / ".cursor"
         self._dream_cursor_file = self.memory_dir / ".dream_cursor"
-        self._corruption_logged = False  # rate-limit non-int cursor warning
-        self._oversize_logged = False  # rate-limit oversized-entry warning
+        self._corruption_logged = False  # 与旧实现兼容的告警标记
+        self._oversize_logged = False
+        # GitStore 被 Dream 的行龄注解依赖，但 PG 化后行龄改由 PG 提供。
+        # 为保留 self.git 引用不抛 NoneError，这里仍构造一个 GitStore（workspace
+        # 不一定是 git 仓库，里面的 is_initialized()/auto_commit() 会自然失败/no-op）。
         self._git = GitStore(workspace, tracked_files=[
             "SOUL.md", "USER.md", "memory/MEMORY.md", "memory/.dream_cursor",
         ])
+        self._repo = NanobotMemoryRepo()
+        # 旧版 legacy HISTORY.md 迁移仅在文件存在时触发；fresh PG 化后不会执行
         self._maybe_migrate_legacy_history()
 
     @property
@@ -201,26 +221,32 @@ class MemoryStore:
     # -- MEMORY.md (long-term facts) -----------------------------------------
 
     def read_memory(self) -> str:
-        return self.read_file(self.memory_file)
+        return self._repo.read_memory_md(get_user_id())
 
     def write_memory(self, content: str) -> None:
-        self.memory_file.write_text(content, encoding="utf-8")
+        self._repo.write_memory_md(get_user_id(), content)
 
     # -- SOUL.md -------------------------------------------------------------
 
     def read_soul(self) -> str:
-        return self.read_file(self.soul_file)
+        return self._repo.read_file(get_user_id(), "SOUL")
 
     def write_soul(self, content: str) -> None:
-        self.soul_file.write_text(content, encoding="utf-8")
+        self._repo.write_file(get_user_id(), "SOUL", content)
 
     # -- USER.md -------------------------------------------------------------
 
     def read_user(self) -> str:
-        return self.read_file(self.user_file)
+        return self._repo.read_file(get_user_id(), "USER")
 
     def write_user(self, content: str) -> None:
-        self.user_file.write_text(content, encoding="utf-8")
+        self._repo.write_file(get_user_id(), "USER", content)
+
+    # -- 行龄（替代原 GitStore.line_ages）-----------------------------------
+
+    def line_ages_for_memory_md(self) -> list[float]:
+        """返回 MEMORY.md 各行（line_no 升序）距今的天数列表。"""
+        return self._repo.line_ages_for_memory_md(get_user_id())
 
     # -- context injection (used by context.py) ------------------------------
 
@@ -231,7 +257,7 @@ class MemoryStore:
     # -- history.jsonl — append-only, JSONL format ---------------------------
 
     def append_history(self, entry: str, *, max_chars: int | None = None) -> int:
-        """Append *entry* to history.jsonl and return its auto-incrementing cursor.
+        """Append *entry* to history（PG: nanobot_memory_history）并返回新 cursor。
 
         Entries are passed through `strip_think` to drop template-level leaks
         (e.g. unclosed `<think` prefixes, `<channel|>` markers) before being
@@ -246,7 +272,6 @@ class MemoryStore:
         large writes (e.g. an LLM echoing its input back as a "summary").
         """
         limit = max_chars if max_chars is not None else _HISTORY_ENTRY_HARD_CAP
-        cursor = self._next_cursor()
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         raw = entry.rstrip()
         if len(raw) > limit:
@@ -262,14 +287,14 @@ class MemoryStore:
         content = strip_think(raw)
         if raw and not content:
             logger.debug(
-                "history entry {} stripped to empty (likely template leak); "
+                "history entry stripped to empty (likely template leak); "
                 "persisting empty content to avoid re-polluting context",
-                cursor,
             )
-        record = {"cursor": cursor, "timestamp": ts, "content": content}
-        with open(self.history_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        self._cursor_file.write_text(str(cursor), encoding="utf-8")
+        cursor = self._repo.append_history(
+            user_id=get_user_id(),
+            timestamp=ts,
+            content=content,
+        )
         return cursor
 
     @staticmethod
@@ -280,7 +305,9 @@ class MemoryStore:
         return value
 
     def _iter_valid_entries(self) -> Iterator[tuple[dict[str, Any], int]]:
-        """Yield ``(entry, cursor)`` for entries with int cursors; warn once on corruption."""
+        """Yield ``(entry, cursor)`` for entries with int cursors; warn once on corruption.
+
+        PG 化后该方法实际不再被使用（保留实现以兼容旧调用方）。"""
         poisoned: Any = None
         for entry in self._read_entries():
             raw = entry.get("cursor")
@@ -300,32 +327,18 @@ class MemoryStore:
             )
 
     def _next_cursor(self) -> int:
-        """Read the current cursor counter and return the next value."""
-        if self._cursor_file.exists():
-            with suppress(ValueError, OSError):
-                return int(self._cursor_file.read_text(encoding="utf-8").strip()) + 1
-        # Fast path: trust the tail when intact.  Otherwise scan the whole
-        # file and take ``max`` — that stays correct even if the monotonic
-        # invariant was broken by external writes.
-        last = self._read_last_entry() or {}
-        cursor = self._valid_cursor(last.get("cursor"))
-        if cursor is not None:
-            return cursor + 1
-        return max((c for _, c in self._iter_valid_entries()), default=0) + 1
+        """Read the current cursor counter and return the next value (从 PG)."""
+        return int(self._repo.get_cursor_value(get_user_id(), "cursor")) + 1
 
     def read_unprocessed_history(self, since_cursor: int) -> list[dict[str, Any]]:
-        """Return history entries with a valid cursor > *since_cursor*."""
-        return [e for e, c in self._iter_valid_entries() if c > since_cursor]
+        """Return history entries with a valid cursor > *since_cursor*（PG 直读）。"""
+        return self._repo.read_unprocessed_history(get_user_id(), int(since_cursor))
 
     def compact_history(self) -> None:
-        """Drop oldest entries if the file exceeds *max_history_entries*."""
+        """Drop oldest entries if total exceeds *max_history_entries*。"""
         if self.max_history_entries <= 0:
             return
-        entries = self._read_entries()
-        if len(entries) <= self.max_history_entries:
-            return
-        kept = entries[-self.max_history_entries:]
-        self._write_entries(kept)
+        self._repo.compact_history(get_user_id(), int(self.max_history_entries))
 
     # -- JSONL helpers -------------------------------------------------------
 
@@ -390,13 +403,10 @@ class MemoryStore:
     # -- dream cursor --------------------------------------------------------
 
     def get_last_dream_cursor(self) -> int:
-        if self._dream_cursor_file.exists():
-            with suppress(ValueError, OSError):
-                return int(self._dream_cursor_file.read_text(encoding="utf-8").strip())
-        return 0
+        return int(self._repo.get_cursor_value(get_user_id(), "dream_cursor"))
 
     def set_last_dream_cursor(self, cursor: int) -> None:
-        self._dream_cursor_file.write_text(str(cursor), encoding="utf-8")
+        self._repo.set_cursor_value(get_user_id(), "dream_cursor", int(cursor))
 
     # -- message formatting utility ------------------------------------------
 
@@ -736,12 +746,14 @@ class Dream:
         self.max_batch_size = max_batch_size
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
-        # Kill switch for the git-blame-based per-line age annotation in Phase 1.
-        # Default True keeps the #3212 behavior; set False to feed MEMORY.md raw
-        # (e.g. if a specific LLM reacts poorly to the `← Nd` suffix).
+        # Kill switch for per-line age annotation in Phase 1.
+        # 行龄来源已切换为 PG（store.line_ages_for_memory_md）；该开关含义不变。
         self.annotate_line_ages = annotate_line_ages
         self._runner = AgentRunner(provider)
         self._tools = self._build_tools()
+        # Phase 2 通过 EditFileTool/WriteFileTool 操作 workspace 中的 SOUL/USER/MEMORY.md
+        # 文件；同一时刻只允许一个用户的 Dream 进入临时落盘流程，避免互相覆盖。
+        self._phase2_lock = asyncio.Lock()
 
     def set_provider(self, provider: LLMProvider, model: str) -> None:
         self.provider = provider
@@ -810,42 +822,36 @@ class Dream:
     def _annotate_with_ages(self, content: str) -> str:
         """Append per-line age suffixes to MEMORY.md content.
 
-        Each non-blank line whose age exceeds ``_STALE_THRESHOLD_DAYS`` gets a
-        suffix like ``← 30d`` indicating days since last modification.
-        Returns the original content unchanged if git is unavailable,
-        annotate fails, or the line count doesn't match the age count
-        (which can happen with an uncommitted working-tree edit — better to
-        skip annotation than to tag the wrong line).
-        SOUL.md and USER.md are never annotated.
+        行龄来源已由 GitStore 切换为 PG（nanobot_memory_md.updated_at）。
+        每条非空行如果 age > ``_STALE_THRESHOLD_DAYS`` 天，会追加形如 ``← 30d`` 的标记。
+        若内容行数与 PG 中行数不一致（例如读出后被外部修改），跳过标注以避免误标。
+        SOUL.md / USER.md 始终不标注。
         """
-        file_path = "memory/MEMORY.md"
         try:
-            ages = self.store.git.line_ages(file_path)
+            ages = self.store.line_ages_for_memory_md()
         except Exception:
-            logger.debug("line_ages failed for {}", file_path)
+            logger.debug("line_ages_for_memory_md failed")
             return content
         if not ages:
             return content
 
         had_trailing = content.endswith("\n")
         lines = content.splitlines()
-        # If HEAD-blob line count disagrees with the working-tree content we
-        # received, ages would be assigned to the wrong lines — skip entirely
-        # and feed the LLM un-annotated content rather than misleading data.
         if len(lines) != len(ages):
             logger.debug(
-                "line_ages length mismatch for {} (lines={}, ages={}); skipping annotation",
-                file_path, len(lines), len(ages),
+                "line_ages length mismatch (lines={}, ages={}); skipping annotation",
+                len(lines), len(ages),
             )
             return content
 
         annotated: list[str] = []
-        for line, age in zip(lines, ages):
+        for line, age_days in zip(lines, ages):
             if not line.strip():
                 annotated.append(line)
                 continue
-            if age.age_days > _STALE_THRESHOLD_DAYS:
-                annotated.append(f"{line}  \u2190 {age.age_days}d")
+            age_int = int(age_days)
+            if age_int > _STALE_THRESHOLD_DAYS:
+                annotated.append(f"{line}  \u2190 {age_int}d")
             else:
                 annotated.append(line)
         result = "\n".join(annotated)
@@ -854,7 +860,14 @@ class Dream:
         return result
 
     async def run(self) -> bool:
-        """Process unprocessed history entries. Returns True if work was done."""
+        """Process unprocessed history entries. Returns True if work was done.
+
+        Phase 2 的 ReadFileTool/EditFileTool/WriteFileTool 仍以 workspace 中的
+        SOUL.md / USER.md / memory/MEMORY.md 物理文件作为读写目标，因此进入
+        Phase 2 前先把 PG 内容 dump 到对应磁盘路径；Phase 2 结束后再将磁盘内容
+        写回 PG（MEMORY.md 走行 diff 以保留未变更行的 updated_at），从而保持
+        Dream 行龄注解的语义。同一时刻通过 _phase2_lock 串行化，避免多用户互相覆盖。
+        """
         from nanobot_main.agent.skills import BUILTIN_SKILLS_DIR
 
         last_cursor = self.store.get_last_dream_cursor()
@@ -953,24 +966,34 @@ class Dream:
             {"role": "user", "content": phase2_prompt},
         ]
 
-        try:
-            result = await self._runner.run(AgentRunSpec(
-                initial_messages=messages,
-                tools=tools,
-                model=self.model,
-                max_iterations=self.max_iterations,
-                max_tool_result_chars=self.max_tool_result_chars,
-                fail_on_tool_error=False,
-            ))
-            logger.debug(
-                "Dream Phase 2 complete: stop_reason={}, tool_events={}",
-                result.stop_reason, len(result.tool_events),
-            )
-            for ev in (result.tool_events or []):
-                logger.info("Dream tool_event: name={}, status={}, detail={}", ev.get("name"), ev.get("status"), ev.get("detail", "")[:200])
-        except Exception:
-            logger.exception("Dream Phase 2 failed")
-            result = None
+        async with self._phase2_lock:
+            # Phase 2 进入前：把 PG 内容 dump 到 workspace 文件，供文件类工具读写
+            self._dump_pg_to_disk(raw_memory)
+            try:
+                try:
+                    result = await self._runner.run(AgentRunSpec(
+                        initial_messages=messages,
+                        tools=tools,
+                        model=self.model,
+                        max_iterations=self.max_iterations,
+                        max_tool_result_chars=self.max_tool_result_chars,
+                        fail_on_tool_error=False,
+                    ))
+                    logger.debug(
+                        "Dream Phase 2 complete: stop_reason={}, tool_events={}",
+                        result.stop_reason, len(result.tool_events),
+                    )
+                    for ev in (result.tool_events or []):
+                        logger.info("Dream tool_event: name={}, status={}, detail={}", ev.get("name"), ev.get("status"), ev.get("detail", "")[:200])
+                except Exception:
+                    logger.exception("Dream Phase 2 failed")
+                    result = None
+            finally:
+                # Phase 2 结束后：将 workspace 文件的最新内容回写到 PG，再清理磁盘文件
+                try:
+                    self._reload_disk_to_pg()
+                finally:
+                    self._cleanup_phase2_files()
 
         # Build changelog from tool events
         changelog: list[str] = []
@@ -996,13 +1019,50 @@ class Dream:
 
         self.store.compact_history()
 
-        # Git auto-commit (only when there are actual changes)
-        if changelog and self.store.git.is_initialized():
-            ts = batch[-1]["timestamp"]
-            summary = f"dream: {ts}, {len(changelog)} change(s)"
-            commit_msg = f"{summary}\n\n{analysis.strip()}"
-            sha = self.store.git.auto_commit(commit_msg)
-            if sha:
-                logger.info("Dream commit: {}", sha)
+        # 旧版 Git auto-commit 用于行龄跟踪；PG 化后行龄由 nanobot_memory_md.updated_at 提供，
+        # 这里跳过 git 提交。保留代码片段不再启用：
+        # if changelog and self.store.git.is_initialized():
+        #     ts = batch[-1]["timestamp"]
+        #     summary = f"dream: {ts}, {len(changelog)} change(s)"
+        #     commit_msg = f"{summary}\n\n{analysis.strip()}"
+        #     sha = self.store.git.auto_commit(commit_msg)
+        #     if sha:
+        #         logger.info("Dream commit: {}", sha)
 
         return True
+
+    # ---- Phase 2 PG ↔ 磁盘 dump/reload 工具方法 ----
+
+    def _dump_pg_to_disk(self, current_memory_raw: str) -> None:
+        """把 PG 中 SOUL/USER/MEMORY.md 内容写入 workspace 路径，供 Phase 2 工具操作。
+
+        ``current_memory_raw`` 是调用方此前已读取的 MEMORY.md 原文（避免重复查询）。
+        """
+        try:
+            self.store.memory_dir.mkdir(parents=True, exist_ok=True)
+            self.store.memory_file.write_text(current_memory_raw or "", encoding="utf-8")
+            self.store.soul_file.write_text(self.store.read_soul() or "", encoding="utf-8")
+            self.store.user_file.write_text(self.store.read_user() or "", encoding="utf-8")
+        except Exception:
+            logger.exception("Dream: failed to dump PG memory to workspace files")
+
+    def _reload_disk_to_pg(self) -> None:
+        """Phase 2 结束后把 workspace 文件内容写回 PG。"""
+        try:
+            if self.store.memory_file.exists():
+                self.store.write_memory(self.store.memory_file.read_text(encoding="utf-8"))
+            if self.store.soul_file.exists():
+                self.store.write_soul(self.store.soul_file.read_text(encoding="utf-8"))
+            if self.store.user_file.exists():
+                self.store.write_user(self.store.user_file.read_text(encoding="utf-8"))
+        except Exception:
+            logger.exception("Dream: failed to reload workspace files back to PG")
+
+    def _cleanup_phase2_files(self) -> None:
+        """删除临时落盘的 SOUL/USER/MEMORY.md，避免与其它逻辑混读。"""
+        for p in (self.store.memory_file, self.store.soul_file, self.store.user_file):
+            try:
+                if p.exists():
+                    p.unlink()
+            except OSError:
+                logger.debug("Dream: cleanup failed for {}", p, exc_info=True)

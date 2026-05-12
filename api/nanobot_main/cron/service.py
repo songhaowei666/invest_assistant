@@ -1,4 +1,14 @@
-"""Cron service for scheduling agent tasks."""
+"""Cron service for scheduling agent tasks.
+
+存储层已从 workspace/cron/jobs.json + cron/action.jsonl 改为 PostgreSQL
+（nanobot_cron_job 表，按 user_id 隔离）。
+
+设计：
+- self._store.jobs 在内存中保留"所有用户"的任务列表，timer 仍然按全局最近任务唤醒。
+- self._job_user[job_id] 记录每个 job 所属的 user_id，_execute_job 时按此 set_user_id。
+- 用户面向的公共方法（add/remove/update/enable/run/list/get）按 get_user_id() 过滤。
+- 历史的 action.jsonl 跨进程合并机制在单进程 FastAPI 部署下不再需要，相关方法保留但不再被调用。
+"""
 
 import asyncio
 import json
@@ -22,6 +32,9 @@ from nanobot_main.cron.types import (
     CronSchedule,
     CronStore,
 )
+
+from core.user_context import get_user_id, use_user_id  # noqa: E402
+from repositories.nanobot_cron_repo import NanobotCronRepo  # noqa: E402
 
 
 def _now_ms() -> int:
@@ -82,6 +95,7 @@ class CronService:
         on_job: Callable[[CronJob], Coroutine[Any, Any, str | None]] | None = None,
         max_sleep_ms: int = 300_000,  # 5 minutes
     ):
+        # store_path / action_path / 文件锁仅为签名兼容保留；PG 化后不再使用
         self.store_path = store_path
         self._action_path = store_path.parent / "action.jsonl"
         self._lock = FileLock(str(self._action_path.parent) + ".lock")
@@ -91,123 +105,48 @@ class CronService:
         self._running = False
         self._timer_active = False
         self.max_sleep_ms = max_sleep_ms
+        # PG 仓库 + 全局 job_id -> user_id 索引（timer 执行时用以回填 user 上下文）
+        self._repo = NanobotCronRepo()
+        self._job_user: dict[str, str] = {}
 
     def _load_jobs(self) -> tuple[list[CronJob], int] | None:
-        """Load jobs from disk.
+        """从 PG 加载所有用户的任务。
 
         Returns:
-            ``(jobs, version)`` tuple on success or when no store file exists
-            (in which case an empty list and version 1 are returned).
-            ``None`` when the store file exists but cannot be parsed; the
-            corrupt file is preserved with a ``.corrupt-<ts>`` suffix so the
-            caller can decide whether to overwrite or bail out.  Returning a
-            sentinel here is important: silently treating a parse error as an
-            empty job list would cause the next ``_save_store`` to wipe every
-            job from disk.
+            ``(jobs, version)`` tuple；version 固定为 1（PG 化后不再使用版本号）。
+            构建 CronJob 时通过 CronJob.from_dict 复用既有反序列化逻辑；同时回填
+            ``self._job_user[job_id] = user_id`` 以供 _execute_job 使用。
         """
+        try:
+            grouped = self._repo.list_all_jobs_grouped()
+        except Exception:
+            logger.exception("Failed to load cron jobs from PG")
+            return None
+
         jobs: list[CronJob] = []
-        version = 1
-        if self.store_path.exists():
-            try:
-                data = json.loads(self.store_path.read_text(encoding="utf-8"))
-                jobs = []
-                version = data.get("version", 1)
-                for j in data.get("jobs", []):
-                    jobs.append(CronJob(
-                        id=j["id"],
-                        name=j["name"],
-                        enabled=j.get("enabled", True),
-                        schedule=CronSchedule(
-                            kind=j["schedule"]["kind"],
-                            at_ms=j["schedule"].get("atMs"),
-                            every_ms=j["schedule"].get("everyMs"),
-                            expr=j["schedule"].get("expr"),
-                            tz=j["schedule"].get("tz"),
-                        ),
-                        payload=CronPayload(
-                            kind=j["payload"].get("kind", "agent_turn"),
-                            message=j["payload"].get("message", ""),
-                            deliver=j["payload"].get("deliver", False),
-                            channel=j["payload"].get("channel"),
-                            to=j["payload"].get("to"),
-                            channel_meta=(
-                                j["payload"].get("channelMeta")
-                                or j["payload"].get("channel_meta")
-                                or {}
-                            ),
-                            session_key=j["payload"].get("sessionKey") or j["payload"].get("session_key"),
-                        ),
-                        state=CronJobState(
-                            next_run_at_ms=j.get("state", {}).get("nextRunAtMs"),
-                            last_run_at_ms=j.get("state", {}).get("lastRunAtMs"),
-                            last_status=j.get("state", {}).get("lastStatus"),
-                            last_error=j.get("state", {}).get("lastError"),
-                            run_history=[
-                                CronRunRecord(
-                                    run_at_ms=r["runAtMs"],
-                                    status=r["status"],
-                                    duration_ms=r.get("durationMs", 0),
-                                    error=r.get("error"),
-                                )
-                                for r in j.get("state", {}).get("runHistory", [])
-                            ],
-                        ),
-                        created_at_ms=j.get("createdAtMs", 0),
-                        updated_at_ms=j.get("updatedAtMs", 0),
-                        delete_after_run=j.get("deleteAfterRun", False),
-                    ))
-            except Exception:
-                # Preserve the corrupt file for forensic recovery instead of
-                # letting the next save overwrite it with an empty job list.
-                backup = self.store_path.with_suffix(
-                    self.store_path.suffix + f".corrupt-{int(time.time())}"
-                )
-                with suppress(OSError):
-                    self.store_path.rename(backup)
-                logger.exception(
-                    "Failed to load cron store at {}. "
-                    "Corrupt file preserved at {}. "
-                    "Refusing to overwrite to avoid data loss.",
-                    self.store_path,
-                    backup,
-                )
-                return None
-        return jobs, version
+        job_user: dict[str, str] = {}
+        for user_id, job_dicts in grouped.items():
+            for j in job_dicts:
+                # _user_id 是 repo 注入的辅助字段，CronJob.from_dict 不识别 -> 弹出
+                jd = dict(j)
+                jd.pop("_user_id", None)
+                try:
+                    job = CronJob.from_dict(jd)
+                except Exception:
+                    logger.exception(
+                        "Failed to deserialize cron job {} for user {}",
+                        jd.get("id"),
+                        user_id,
+                    )
+                    continue
+                jobs.append(job)
+                job_user[job.id] = user_id
+
+        self._job_user = job_user
+        return jobs, 1
 
     def _merge_action(self):
-        if not self._action_path.exists():
-            return
-
-        jobs_map = {j.id: j for j in self._store.jobs}
-        def _update(params: dict):
-            j = CronJob.from_dict(params)
-            jobs_map[j.id] = j
-
-        def _del(params: dict):
-            if job_id := params.get("job_id"):
-                jobs_map.pop(job_id)
-
-        with self._lock:
-            with open(self._action_path, "r", encoding="utf-8") as f:
-                changed = False
-                for line in f:
-                    try:
-                        line = line.strip()
-                        action = json.loads(line)
-                        if "action" not in action:
-                            continue
-                        if action["action"] == "del":
-                            _del(action.get("params", {}))
-                        else:
-                            _update(action.get("params", {}))
-                        changed = True
-                    except Exception:
-                        logger.exception("load action line error")
-                        continue
-            self._store.jobs = list(jobs_map.values())
-            if self._running and changed:
-                self._action_path.write_text("", encoding="utf-8")
-                self._save_store()
+        """[deprecated] 旧版跨进程合并 action.jsonl 的逻辑；PG 化后单进程下不再需要，保留方法为空体。"""
         return
 
     def _load_store(self) -> CronStore | None:
@@ -238,72 +177,41 @@ class CronService:
         return self._store
 
     def _save_store(self) -> None:
-        """Save jobs to disk."""
+        """将当前内存中的 jobs 批量同步回 PG（按 user_id 分组覆盖写）。
+
+        通过 self._job_user 将 jobs 分配到各 user_id；任何不在 _job_user 中的 job
+        视为当前上下文用户的新增任务，user_id 取自 get_user_id()。
+        """
         if not self._store:
             return
 
-        self.store_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            current_uid = get_user_id()
+        except Exception:
+            current_uid = "default_user"
 
-        data = {
-            "version": self._store.version,
-            "jobs": [
-                {
-                    "id": j.id,
-                    "name": j.name,
-                    "enabled": j.enabled,
-                    "schedule": {
-                        "kind": j.schedule.kind,
-                        "atMs": j.schedule.at_ms,
-                        "everyMs": j.schedule.every_ms,
-                        "expr": j.schedule.expr,
-                        "tz": j.schedule.tz,
-                    },
-                    "payload": {
-                        "kind": j.payload.kind,
-                        "message": j.payload.message,
-                        "deliver": j.payload.deliver,
-                        "channel": j.payload.channel,
-                        "to": j.payload.to,
-                        "channelMeta": j.payload.channel_meta,
-                        "sessionKey": j.payload.session_key,
-                    },
-                    "state": {
-                        "nextRunAtMs": j.state.next_run_at_ms,
-                        "lastRunAtMs": j.state.last_run_at_ms,
-                        "lastStatus": j.state.last_status,
-                        "lastError": j.state.last_error,
-                        "runHistory": [
-                            {
-                                "runAtMs": r.run_at_ms,
-                                "status": r.status,
-                                "durationMs": r.duration_ms,
-                                "error": r.error,
-                            }
-                            for r in j.state.run_history
-                        ],
-                    },
-                    "createdAtMs": j.created_at_ms,
-                    "updatedAtMs": j.updated_at_ms,
-                    "deleteAfterRun": j.delete_after_run,
-                }
-                for j in self._store.jobs
-            ]
-        }
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for j in self._store.jobs:
+            user_id = self._job_user.get(j.id) or current_uid
+            self._job_user[j.id] = user_id
+            grouped.setdefault(user_id, []).append(asdict(j))
 
-        self._atomic_write(self.store_path, json.dumps(data, indent=2, ensure_ascii=False))
+        # 清理 _job_user 中已不存在的条目
+        existing_ids = {j.id for j in self._store.jobs}
+        for jid in list(self._job_user.keys()):
+            if jid not in existing_ids:
+                self._job_user.pop(jid, None)
+
+        try:
+            for user_id, jobs in grouped.items():
+                self._repo.save_jobs(user_id, jobs)
+        except Exception:
+            logger.exception("Failed to save cron jobs to PG")
+            raise
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:
-        """Write *content* to *path* atomically with fsync.
-
-        Uses a temp-file + ``os.replace`` + ``fsync`` pattern so a crash or
-        SIGKILL mid-write cannot leave the destination truncated or invalid.
-        Mirrors ``nanobot.session.manager.SessionManager.save`` (see
-        commit 512bf59, ``fix(session): fsync sessions on graceful shutdown
-        to prevent data loss``).  Without this, ``jobs.json`` could be
-        corrupted on container shutdown and silently re-created empty on
-        next start, wiping every scheduled job.
-        """
+        """[deprecated] 原子写入文件的工具方法；PG 化后不再调用，保留实现以便参考。"""
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(path.suffix + ".tmp")
         try:
@@ -312,9 +220,6 @@ class CronService:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, path)
-            # fsync the parent directory so the rename itself is durable.
-            # Skip on Windows where opening a directory raises PermissionError;
-            # NTFS journals metadata synchronously so this is a no-op there.
             with suppress(PermissionError):
                 fd = os.open(str(path.parent), os.O_RDONLY)
                 try:
@@ -418,13 +323,19 @@ class CronService:
         self._arm_timer()
 
     async def _execute_job(self, job: CronJob) -> None:
-        """Execute a single job."""
+        """Execute a single job.
+
+        进入回调前按 self._job_user 解析 job 所属 user_id 并通过 use_user_id 注入上下文，
+        让 on_job 内部的 SessionManager / MemoryStore 等 PG 仓库能命中正确用户。
+        """
         start_ms = _now_ms()
         logger.info("Cron: executing job '{}' ({})", job.name, job.id)
 
+        job_user_id = self._job_user.get(job.id) or "default_user"
         try:
             if self.on_job:
-                await self.on_job(job)
+                with use_user_id(job_user_id):
+                    await self.on_job(job)
 
             job.state.last_status = "ok"
             job.state.last_error = None
@@ -459,18 +370,46 @@ class CronService:
             job.state.next_run_at_ms = _compute_next_run(job.schedule, _now_ms())
 
     def _append_action(self, action: Literal["add", "del", "update"], params: dict):
-        self.store_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock:
-            with open(self._action_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"action": action, "params": params}, ensure_ascii=False) + "\n")
+        """[deprecated] 旧版跨进程动作队列；PG 化后改为直接同步 PG。
+
+        为避免 action.jsonl 残留导致旧版进程读取错误，这里改为直接对 PG 执行等价操作。
+        """
+        try:
+            current_uid = get_user_id()
+        except Exception:
+            current_uid = "default_user"
+        try:
+            if action == "del":
+                job_id = params.get("job_id")
+                if job_id:
+                    self._repo.delete_job(current_uid, str(job_id))
+                    self._job_user.pop(str(job_id), None)
+                return
+            # add / update：params 形如 asdict(CronJob)
+            self._repo.upsert_job(current_uid, dict(params))
+            jid = str(params.get("id", ""))
+            if jid:
+                self._job_user[jid] = current_uid
+        except Exception:
+            logger.exception("Failed to append action {} via PG", action)
 
 
     # ========== Public API ==========
 
+    def _is_current_user_job(self, job: CronJob, current_uid: str) -> bool:
+        """判断 job 是否属于当前用户。未在 _job_user 中（典型为本进程新创建尚未 _save_store
+        的 job）时按当前 uid 处理；系统任务（system_event）不与用户隔离。"""
+        owner = self._job_user.get(job.id)
+        if owner is None:
+            return True
+        return owner == current_uid
+
     def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
-        """List all jobs."""
+        """List jobs for current user."""
         store = self._load_store()
-        jobs = store.jobs if include_disabled else [j for j in store.jobs if j.enabled]
+        uid = get_user_id()
+        scope = [j for j in store.jobs if self._is_current_user_job(j, uid)]
+        jobs = scope if include_disabled else [j for j in scope if j.enabled]
         return sorted(jobs, key=lambda j: j.state.next_run_at_ms or float('inf'))
 
     def add_job(
@@ -508,6 +447,9 @@ class CronService:
             updated_at_ms=now,
             delete_after_run=delete_after_run,
         )
+        uid = get_user_id()
+        self._job_user[job.id] = uid
+
         if self._running:
             store = self._load_store()
             store.jobs.append(job)
@@ -516,11 +458,14 @@ class CronService:
         else:
             self._append_action("add", asdict(job))
 
-        logger.info("Cron: added job '{}' ({})", name, job.id)
+        logger.info("Cron: added job '{}' ({}) for user {}", name, job.id, uid)
         return job
 
     def register_system_job(self, job: CronJob) -> CronJob:
-        """Register an internal system job (idempotent on restart)."""
+        """Register an internal system job (idempotent on restart).
+
+        系统任务按当前 user_id 注册一份；不同用户的系统任务彼此独立。
+        """
         store = self._load_store()
         now = _now_ms()
         job.state = CronJobState(next_run_at_ms=_compute_next_run(job.schedule, now))
@@ -528,15 +473,21 @@ class CronService:
         job.updated_at_ms = now
         store.jobs = [j for j in store.jobs if j.id != job.id]
         store.jobs.append(job)
+        uid = get_user_id()
+        self._job_user[job.id] = uid
         self._save_store()
         self._arm_timer()
-        logger.info("Cron: registered system job '{}' ({})", job.name, job.id)
+        logger.info("Cron: registered system job '{}' ({}) for user {}", job.name, job.id, uid)
         return job
 
     def remove_job(self, job_id: str) -> Literal["removed", "protected", "not_found"]:
         """Remove a job by ID, unless it is a protected system job."""
         store = self._load_store()
-        job = next((j for j in store.jobs if j.id == job_id), None)
+        uid = get_user_id()
+        job = next(
+            (j for j in store.jobs if j.id == job_id and self._is_current_user_job(j, uid)),
+            None,
+        )
         if job is None:
             return "not_found"
         if job.payload.kind == "system_event":
@@ -548,12 +499,13 @@ class CronService:
         removed = len(store.jobs) < before
 
         if removed:
+            self._job_user.pop(job_id, None)
             if self._running:
                 self._save_store()
                 self._arm_timer()
             else:
                 self._append_action("del", {"job_id": job_id})
-            logger.info("Cron: removed job {}", job_id)
+            logger.info("Cron: removed job {} for user {}", job_id, uid)
             return "removed"
 
         return "not_found"
@@ -561,8 +513,9 @@ class CronService:
     def enable_job(self, job_id: str, enabled: bool = True) -> CronJob | None:
         """Enable or disable a job."""
         store = self._load_store()
+        uid = get_user_id()
         for job in store.jobs:
-            if job.id == job_id:
+            if job.id == job_id and self._is_current_user_job(job, uid):
                 job.enabled = enabled
                 job.updated_at_ms = _now_ms()
                 if enabled:
@@ -595,7 +548,11 @@ class CronService:
         to update; omit (sentinel ``...``) to leave unchanged.
         """
         store = self._load_store()
-        job = next((j for j in store.jobs if j.id == job_id), None)
+        uid = get_user_id()
+        job = next(
+            (j for j in store.jobs if j.id == job_id and self._is_current_user_job(j, uid)),
+            None,
+        )
         if job is None:
             return "not_found"
         if job.payload.kind == "system_event":
@@ -634,10 +591,11 @@ class CronService:
         """Manually run a job without disturbing the service's running state."""
         was_running = self._running
         self._running = True
+        uid = get_user_id()
         try:
             store = self._load_store()
             for job in store.jobs:
-                if job.id == job_id:
+                if job.id == job_id and self._is_current_user_job(job, uid):
                     if not force and not job.enabled:
                         return False
                     await self._execute_job(job)
@@ -652,13 +610,19 @@ class CronService:
     def get_job(self, job_id: str) -> CronJob | None:
         """Get a job by ID."""
         store = self._load_store()
-        return next((j for j in store.jobs if j.id == job_id), None)
+        uid = get_user_id()
+        return next(
+            (j for j in store.jobs if j.id == job_id and self._is_current_user_job(j, uid)),
+            None,
+        )
 
     def status(self) -> dict:
         """Get service status."""
         store = self._load_store()
+        uid = get_user_id()
+        scope = [j for j in store.jobs if self._is_current_user_job(j, uid)]
         return {
             "enabled": self._running,
-            "jobs": len(store.jobs),
+            "jobs": len(scope),
             "next_wake_at_ms": self._get_next_wake_ms(),
         }

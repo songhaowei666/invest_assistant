@@ -1,4 +1,9 @@
-"""机器人会话：基于 nanobot_main 的 SessionManager 与 AgentLoop，不修改 nanobot_main 包内代码。"""
+"""机器人会话：基于 nanobot_main 的 SessionManager 与 AgentLoop。
+
+PG 化改造后，每个对外接口在执行业务前通过 use_user_id 绑定当前 user_id
+（当前阶段固定为 default_user），底层 SessionManager / MemoryStore / CronService
+会从 ContextVar 读取并按用户隔离存储。
+"""
 
 from __future__ import annotations
 
@@ -10,6 +15,7 @@ import uuid
 from typing import Any, AsyncIterator
 
 from core import create_bot
+from core.user_context import DEFAULT_USER_ID, use_user_id
 
 # 与 nanobot_main.api.server 中 HTTP 会话约定一致
 API_CHAT_ID = "default"
@@ -68,16 +74,26 @@ def _public_message_row(msg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ensure_session_on_disk(sm: Any, key: str) -> None:
-    """磁盘上无该会话时创建空会话并保存（用户新会话由前端生成 key 即可）。"""
+    """如果 PG 中无该会话则创建空会话并保存（用户新会话由前端生成 key 即可）。
+
+    注：函数名沿用旧版（曾经基于磁盘 jsonl），现实际作用于 PG。
+    """
     if sm.read_session_file(key) is not None:
         return
     session = sm.get_or_create(key)
     sm.save(session)
 
 
+def _ensure_session_with_uid(sm: Any, key: str, user_id: str) -> None:
+    """asyncio.to_thread 跨线程时 ContextVar 不会自动继承，这里在线程内重新绑定 user_id。"""
+    with use_user_id(user_id):
+        _ensure_session_on_disk(sm, key)
+
+
 async def list_sessions_json() -> dict[str, Any]:
     nb = await ensure_nanobot()
-    rows = nb._loop.sessions.list_sessions()
+    with use_user_id(DEFAULT_USER_ID):
+        rows = nb._loop.sessions.list_sessions()
     sessions: list[dict[str, Any]] = []
     for r in rows:
         sessions.append(
@@ -94,7 +110,8 @@ async def list_sessions_json() -> dict[str, Any]:
 
 async def delete_session_json(key: str) -> dict[str, Any]:
     nb = await ensure_nanobot()
-    deleted = nb._loop.sessions.delete_session(key)
+    with use_user_id(DEFAULT_USER_ID):
+        deleted = nb._loop.sessions.delete_session(key)
     return {"deleted": deleted}
 
 
@@ -103,8 +120,10 @@ async def session_history_json(key: str, limit: int = 30) -> dict[str, Any]:
     sm = nb._loop.sessions
 
     def _load() -> dict[str, Any] | None:
-        _ensure_session_on_disk(sm, key)
-        return sm.read_session_file(key)
+        # PG 仓库依赖 ContextVar 中的 user_id；子线程内重新绑定一次。
+        with use_user_id(DEFAULT_USER_ID):
+            _ensure_session_on_disk(sm, key)
+            return sm.read_session_file(key)
 
     raw = await asyncio.to_thread(_load)
     if raw is None:
@@ -148,18 +167,25 @@ async def chat_sse_tokens(key: str, content: str) -> AsyncIterator[bytes]:
         nonlocal stream_failed
         try:
             async with lock:
-                await asyncio.to_thread(_ensure_session_on_disk, loop.sessions, key)
-                response = await asyncio.wait_for(
-                    loop.process_direct(
-                        content=content,
-                        session_key=key,
-                        channel="api",
-                        chat_id=API_CHAT_ID,
-                        on_stream=_on_stream,
-                        on_stream_end=_on_stream_end,
-                    ),
-                    timeout=CHAT_TIMEOUT_S,
-                )
+                # 绑定 user_id 上下文：处理 session 与下游 PG 仓库（SessionManager/MemoryStore/Cron）
+                with use_user_id(DEFAULT_USER_ID):
+                    await asyncio.to_thread(
+                        _ensure_session_with_uid,
+                        loop.sessions,
+                        key,
+                        DEFAULT_USER_ID,
+                    )
+                    response = await asyncio.wait_for(
+                        loop.process_direct(
+                            content=content,
+                            session_key=key,
+                            channel="api",
+                            chat_id=API_CHAT_ID,
+                            on_stream=_on_stream,
+                            on_stream_end=_on_stream_end,
+                        ),
+                        timeout=CHAT_TIMEOUT_S,
+                    )
                 if not emitted_content:
                     text = (getattr(response, "content", None) or str(response or "")) or ""
                     if text.strip():

@@ -620,6 +620,9 @@
 }
 
 .research-qa__sidebar-top {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   padding: 14px 14px 10px;
   border-bottom: 1px solid #eef2f8;
 }

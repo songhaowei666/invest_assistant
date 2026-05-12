@@ -25,6 +25,33 @@ function sessionTitle(s) {
   return id.length > 28 ? `${id.slice(0, 14)}…${id.slice(-8)}` : id
 }
 
+/**
+ * 会话列表副标题：只展示用户第一条问题，不展示接口返回的 JSON 原文。
+ * 优先用已加载的聊天记录；否则尝试从 preview 字段解析 JSON 中的 question。
+ */
+function sessionPreviewText(s, chatBySession) {
+  const chat = chatBySession[s.session_id]
+  if (Array.isArray(chat) && chat.length > 0) {
+    const firstUser = chat.find((m) => m.role === 'user')
+    const q = typeof firstUser?.question === 'string' ? firstUser.question.trim() : ''
+    if (q) return q
+  }
+  const raw = (s.preview || '').trim()
+  if (!raw) return '暂无预览内容'
+  if (raw.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object' && typeof parsed.question === 'string') {
+        const q = parsed.question.trim()
+        if (q) return q
+      }
+    } catch {
+      /* 非 JSON 则回退为原文 */
+    }
+  }
+  return raw
+}
+
 /** 会话列表项映射到统一结构 */
 function mapSession(s) {
   return {
@@ -287,7 +314,7 @@ export default function ResearchQaLayout({ apiBase }) {
           <button type="button" className="research-qa__new-btn" onClick={handleNewSession}>
             新建会话
           </button>
-          <button type="button" className="research-qa__refresh-btn" onClick={() => void handleShowScopeHint()} disabled={scopeLoading}>
+          <button type="button" className="research-qa__new-btn" onClick={() => void handleShowScopeHint()} disabled={scopeLoading}>
             {scopeLoading ? '加载中…' : '功能提示'}
           </button>
         </div>
@@ -327,7 +354,6 @@ export default function ResearchQaLayout({ apiBase }) {
                       ×
                     </button>
                   </div>
-                  <span className="research-qa__session-preview">{s.preview || '暂无预览内容'}</span>
                 </div>
               </li>
             ))}

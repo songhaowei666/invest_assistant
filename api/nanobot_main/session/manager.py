@@ -1,4 +1,11 @@
-"""Session management for conversation history."""
+"""Session management for conversation history.
+
+存储层已从 workspace/sessions/*.jsonl 改为 PostgreSQL（按 user_id 隔离）。
+Session 数据类与所有纯内存方法保持原状，仅替换底层 _load / save / list /
+delete / read_session_file / flush_all 等访问磁盘的方法为 PG 调用。
+
+历史的 jsonl 读写、_repair、legacy 迁移逻辑作为代码保留以便参考但不会被触发。
+"""
 
 import json
 import os
@@ -19,6 +26,10 @@ from nanobot_main.utils.helpers import (
     image_placeholder_text,
     safe_filename,
 )
+
+# PG 仓库：用户上下文取自 api/core/user_context.current_user_id
+from core.user_context import get_user_id  # noqa: E402
+from repositories.nanobot_session_repo import NanobotSessionRepo  # noqa: E402
 
 FILE_MAX_MESSAGES = 2000
 
@@ -240,14 +251,20 @@ class SessionManager:
     """
     Manages conversation sessions.
 
-    Sessions are stored as JSONL files in the sessions directory.
+    Sessions 数据持久化位置：PostgreSQL（nanobot_session / nanobot_session_message），
+    按当前 user_id（core.user_context.current_user_id）隔离。
+
+    workspace 参数仅作历史签名兼容，PG 化后不再使用 sessions 目录。
+    历史 jsonl 相关方法保留，但仅作参考或在工具函数中复用。
     """
 
     def __init__(self, workspace: Path):
         self.workspace = workspace
-        self.sessions_dir = ensure_dir(self.workspace / "sessions")
+        # PG 化后不再使用 sessions_dir / legacy_sessions_dir，仅保留属性兼容其它引用
+        self.sessions_dir = workspace / "sessions"
         self.legacy_sessions_dir = get_legacy_sessions_dir()
         self._cache: dict[str, Session] = {}
+        self._repo = NanobotSessionRepo()
 
     @staticmethod
     def safe_key(key: str) -> str:
@@ -255,11 +272,11 @@ class SessionManager:
         return safe_filename(key.replace(":", "_"))
 
     def _get_session_path(self, key: str) -> Path:
-        """Get the file path for a session."""
+        """[deprecated] 旧版按文件存储时的 session 路径，PG 化后保留但不再使用。"""
         return self.sessions_dir / f"{self.safe_key(key)}.jsonl"
 
     def _get_legacy_session_path(self, key: str) -> Path:
-        """Legacy global session path (~/.nanobot/sessions/)."""
+        """[deprecated] 旧版 ~/.nanobot/sessions 路径，PG 化后保留但不再使用。"""
         return self.legacy_sessions_dir / f"{self.safe_key(key)}.jsonl"
 
     def get_or_create(self, key: str) -> Session:
@@ -283,57 +300,39 @@ class SessionManager:
         return session
 
     def _load(self, key: str) -> Session | None:
-        """Load a session from disk."""
-        path = self._get_session_path(key)
-        if not path.exists():
-            legacy_path = self._get_legacy_session_path(key)
-            if legacy_path.exists():
-                try:
-                    shutil.move(str(legacy_path), str(path))
-                    logger.info("Migrated session {} from legacy path", key)
-                except Exception:
-                    logger.exception("Failed to migrate session {}", key)
+        """从 PG 加载 session：按 (user_id, session_key) 查询主表 + 消息表。"""
+        user_id = get_user_id()
+        try:
+            payload = self._repo.load_session_full(user_id, key)
+        except Exception as e:
+            logger.warning("Failed to load session {} for user {}: {}", key, user_id, e)
+            return None
 
-        if not path.exists():
+        if payload is None:
             return None
 
         try:
-            messages = []
-            metadata = {}
-            created_at = None
-            updated_at = None
-            last_consolidated = 0
-
-            with open(path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-
-                    data = json.loads(line)
-
-                    if data.get("_type") == "metadata":
-                        metadata = data.get("metadata", {})
-                        created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None
-                        updated_at = datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else None
-                        last_consolidated = data.get("last_consolidated", 0)
-                    else:
-                        messages.append(data)
-
+            created_at = (
+                datetime.fromisoformat(payload["created_at"])
+                if payload.get("created_at")
+                else datetime.now()
+            )
+            updated_at = (
+                datetime.fromisoformat(payload["updated_at"])
+                if payload.get("updated_at")
+                else datetime.now()
+            )
             return Session(
                 key=key,
-                messages=messages,
-                created_at=created_at or datetime.now(),
-                updated_at=updated_at or datetime.now(),
-                metadata=metadata,
-                last_consolidated=last_consolidated
+                messages=list(payload.get("messages") or []),
+                created_at=created_at,
+                updated_at=updated_at,
+                metadata=dict(payload.get("metadata") or {}),
+                last_consolidated=int(payload.get("last_consolidated", 0) or 0),
             )
         except Exception as e:
-            logger.warning("Failed to load session {}: {}", key, e)
-            repaired = self._repair(key)
-            if repaired is not None:
-                logger.info("Recovered session {} from corrupt file ({} messages)", key, len(repaired.messages))
-            return repaired
+            logger.warning("Failed to deserialize session {} for user {}: {}", key, user_id, e)
+            return None
 
     def _repair(self, key: str) -> Session | None:
         """Attempt to recover a session from a corrupt JSONL file."""
@@ -401,50 +400,24 @@ class SessionManager:
         }
 
     def save(self, session: Session, *, fsync: bool = False) -> None:
-        """Save a session to disk atomically.
+        """保存 session 到 PG。
 
-        When *fsync* is ``True`` the final file and its parent directory are
-        explicitly flushed to durable storage.  This is intentionally off by
-        default (the OS page-cache is sufficient for normal operation) but
-        should be enabled during graceful shutdown so that filesystems with
-        write-back caching (e.g. rclone VFS, NFS, FUSE mounts) do not lose
-        the most recent writes.
+        fsync 参数保留以兼容旧接口；PG 事务提交后即视为持久化，
+        无需 file/dir fsync，参数被忽略。
         """
-        path = self._get_session_path(session.key)
-        tmp_path = path.with_suffix(".jsonl.tmp")
-
+        user_id = get_user_id()
         try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                metadata_line = {
-                    "_type": "metadata",
-                    "key": session.key,
-                    "created_at": session.created_at.isoformat(),
-                    "updated_at": session.updated_at.isoformat(),
-                    "metadata": session.metadata,
-                    "last_consolidated": session.last_consolidated
-                }
-                f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
-                for msg in session.messages:
-                    f.write(json.dumps(msg, ensure_ascii=False) + "\n")
-                if fsync:
-                    f.flush()
-                    os.fsync(f.fileno())
-
-            os.replace(tmp_path, path)
-
-            if fsync:
-                # fsync the directory so the rename is durable.
-                # On Windows, opening a directory with O_RDONLY raises
-                # PermissionError — skip the dir sync there (NTFS
-                # journals metadata synchronously).
-                with suppress(PermissionError):
-                    fd = os.open(str(path.parent), os.O_RDONLY)
-                    try:
-                        os.fsync(fd)
-                    finally:
-                        os.close(fd)
-        except BaseException:
-            tmp_path.unlink(missing_ok=True)
+            self._repo.save_session(
+                user_id=user_id,
+                session_key=session.key,
+                created_at=session.created_at,
+                updated_at=session.updated_at,
+                metadata=session.metadata or {},
+                last_consolidated=session.last_consolidated,
+                messages=list(session.messages or []),
+            )
+        except Exception:
+            logger.exception("Failed to save session {} for user {}", session.key, user_id)
             raise
 
         self._cache[session.key] = session
@@ -470,106 +443,52 @@ class SessionManager:
         self._cache.pop(key, None)
 
     def delete_session(self, key: str) -> bool:
-        """Remove a session from disk and the in-memory cache.
+        """从 PG 删除会话主表与消息行，并清理内存缓存。
 
-        Returns True if a JSONL file was found and unlinked.
+        Returns True if a session row was deleted.
         """
-        path = self._get_session_path(key)
+        user_id = get_user_id()
         self.invalidate(key)
-        if not path.exists():
-            return False
         try:
-            path.unlink()
-            return True
-        except OSError as e:
-            logger.warning("Failed to delete session file {}: {}", path, e)
+            return self._repo.delete_session(user_id, key)
+        except Exception:
+            logger.exception("Failed to delete session {} for user {}", key, user_id)
             return False
 
     def read_session_file(self, key: str) -> dict[str, Any] | None:
-        """Load a session from disk without caching; intended for read-only HTTP endpoints.
+        """从 PG 读取会话全量（不进缓存），供只读 HTTP 接口使用。
 
-        Returns ``{"key", "created_at", "updated_at", "metadata", "messages"}`` or
-        ``None`` when the session file does not exist or fails to parse.
+        返回结构：``{"key", "created_at", "updated_at", "metadata", "messages"}``，
+        会话不存在时返回 ``None``。
         """
-        path = self._get_session_path(key)
-        if not path.exists():
-            return None
+        user_id = get_user_id()
         try:
-            messages: list[dict[str, Any]] = []
-            metadata: dict[str, Any] = {}
-            created_at: str | None = None
-            updated_at: str | None = None
-            stored_key: str | None = None
-            with open(path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    data = json.loads(line)
-                    if data.get("_type") == "metadata":
-                        metadata = data.get("metadata", {})
-                        created_at = data.get("created_at")
-                        updated_at = data.get("updated_at")
-                        stored_key = data.get("key")
-                    else:
-                        messages.append(data)
-            return {
-                "key": stored_key or key,
-                "created_at": created_at,
-                "updated_at": updated_at,
-                "metadata": metadata,
-                "messages": messages,
-            }
-        except Exception as e:
-            logger.warning("Failed to read session {}: {}", key, e)
-            repaired = self._repair(key)
-            if repaired is not None:
-                logger.info("Recovered read-only session view {} from corrupt file", key)
-                return self._session_payload(repaired)
+            payload = self._repo.load_session_full(user_id, key)
+        except Exception:
+            logger.exception("Failed to read session {} for user {}", key, user_id)
             return None
+
+        if payload is None:
+            return None
+
+        return {
+            "key": payload.get("key", key),
+            "created_at": payload.get("created_at"),
+            "updated_at": payload.get("updated_at"),
+            "metadata": dict(payload.get("metadata") or {}),
+            "messages": list(payload.get("messages") or []),
+        }
 
     def list_sessions(self) -> list[dict[str, Any]]:
         """
-        List all sessions.
+        List all sessions for current user.
 
         Returns:
-            List of session info dicts.
+            List of session info dicts: ``{key, created_at, updated_at, title, path}``。
         """
-        sessions = []
-
-        for path in self.sessions_dir.glob("*.jsonl"):
-            fallback_key = path.stem.replace("_", ":", 1)
-            try:
-                # Read just the metadata line
-                with open(path, encoding="utf-8") as f:
-                    first_line = f.readline().strip()
-                    if first_line:
-                        data = json.loads(first_line)
-                        if data.get("_type") == "metadata":
-                            key = data.get("key") or path.stem.replace("_", ":", 1)
-                            metadata = data.get("metadata", {})
-                            title = metadata.get("title") if isinstance(metadata, dict) else None
-                            sessions.append({
-                                "key": key,
-                                "created_at": data.get("created_at"),
-                                "updated_at": data.get("updated_at"),
-                                "title": title if isinstance(title, str) else "",
-                                "path": str(path)
-                            })
-            except Exception:
-                repaired = self._repair(fallback_key)
-                if repaired is not None:
-                    sessions.append({
-                        "key": repaired.key,
-                        "created_at": repaired.created_at.isoformat(),
-                        "updated_at": repaired.updated_at.isoformat(),
-                        "title": (
-                            repaired.metadata.get("title")
-                            if isinstance(repaired.metadata.get("title"), str)
-                            else ""
-                        ),
-                        "path": str(path)
-                    })
-                continue
-
-        return sorted(sessions, key=lambda x: x.get("updated_at", ""), reverse=True)
+        user_id = get_user_id()
+        try:
+            return self._repo.list_sessions(user_id)
+        except Exception:
+            logger.exception("Failed to list sessions for user {}", user_id)
+            return []

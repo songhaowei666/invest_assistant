@@ -19,7 +19,7 @@
 
 ## 运行环境
 
-- Python 3.10+（建议 3.11）
+- Python 3.11+（建议 3.12）
 - Node.js 18+（建议 LTS）
 - PostgreSQL（默认配置为 PostgreSQL 连接）
 
@@ -51,6 +51,26 @@ npm install
 
 后端默认地址：`http://127.0.0.1:8000`  
 健康检查：`GET /health`
+
+### 3.1) 手动创建 nanobot PG 表（新增）
+
+`nanobot_main` 的会话、定时任务、记忆存储已迁移到 PostgreSQL。  
+这些新表**不走启动自动建表**，请手动执行：
+
+```bash
+cd api
+python3 scripts/create_nanobot_tables.py
+```
+
+脚本会创建（或确认存在）以下 7 张表，并刷新 PostgreSQL `COMMENT ON`：
+
+- `nanobot_session`
+- `nanobot_session_message`
+- `nanobot_cron_job`
+- `nanobot_memory_file`
+- `nanobot_memory_md`
+- `nanobot_memory_history`
+- `nanobot_memory_cursor`
 
 ### 4) 启动前端
 
@@ -96,6 +116,19 @@ npm install
 - `earnings-lens`：`GET /earnings-lens`（独立控制器，详见 `docs/api/earnings-lens-api.md`）
 - `bot`：`/bot/sessions/list`、`/bot/sessions/history`、`/bot/sessions/delete`、`/bot/chat`
 - `sql-copilot`：`/sql-copilot/chat`、`/sql-copilot/query-scope`、`/sql-copilot/sessions/*`
+
+## Bot 存储说明（重要更新）
+
+当前 `bot` 对话链路已从 workspace 文件存储切换为 PostgreSQL：
+
+- 会话：原 `api/.nanobot/sessions/*.jsonl` → `nanobot_session` + `nanobot_session_message`
+- 定时任务：原 `api/.nanobot/cron/jobs.json` → `nanobot_cron_job`
+- 记忆：原 `SOUL.md`/`USER.md`/`memory/MEMORY.md`/`memory/history.jsonl` → `nanobot_memory_*` 系列表
+
+隔离策略：
+
+- 底层存储按 `user_id` 做隔离
+- 当前 `/bot/*` 入口默认使用 `default_user`（后续可平滑切换到真实登录态用户）
 
 ## 文档索引
 

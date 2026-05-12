@@ -17,7 +17,10 @@ from nanobot_main.utils.prompt_templates import render_template
 class ContextBuilder:
     """Builds the context (system prompt + messages) for the agent."""
 
-    BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"]
+    # SOUL.md / USER.md 已迁移到 PG（按 user_id 隔离），不再从磁盘 BOOTSTRAP 读取，
+    # 改为通过 self.memory.read_soul() / read_user() 注入。
+    BOOTSTRAP_FILES = ["AGENTS.md", "TOOLS.md"]
+    _PG_MEMORY_FILES = ("SOUL.md", "USER.md")
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
     _MAX_RECENT_HISTORY = 50
     _MAX_HISTORY_CHARS = 32_000  # hard cap on recent history section size
@@ -110,7 +113,7 @@ class ContextBuilder:
         return _to_blocks(left) + _to_blocks(right)
 
     def _load_bootstrap_files(self) -> str:
-        """Load all bootstrap files from workspace."""
+        """Load all bootstrap files: 磁盘上的 AGENTS.md/TOOLS.md + PG 中的 SOUL/USER。"""
         parts = []
 
         for filename in self.BOOTSTRAP_FILES:
@@ -118,6 +121,14 @@ class ContextBuilder:
             if file_path.exists():
                 content = file_path.read_text(encoding="utf-8")
                 parts.append(f"## {filename}\n\n{content}")
+
+        # SOUL.md / USER.md 走 PG，按当前 user_id 注入
+        soul_content = self.memory.read_soul()
+        if soul_content:
+            parts.append(f"## SOUL.md\n\n{soul_content}")
+        user_content = self.memory.read_user()
+        if user_content:
+            parts.append(f"## USER.md\n\n{user_content}")
 
         return "\n\n".join(parts) if parts else ""
 
