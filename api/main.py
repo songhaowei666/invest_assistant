@@ -1,15 +1,18 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from controllers.router import api_router
 from configs.config import settings
+from controllers.router import api_router
 from db import SessionLocal, engine
+from extensions import init_extensions
 from models.base import Base
 from models.position import Position
 from repositories.position_repo import PositionRepository
 
 
 app = FastAPI(title=settings.APP_NAME)
+# Celery 等在 extensions.init_extensions 内初始化（含 app.state.celery）
+init_extensions(app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

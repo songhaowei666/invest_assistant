@@ -10,3 +10,4 @@ openai
 vanna
 chromadb
 mem0ai
+celery[redis]
