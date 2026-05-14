@@ -10,7 +10,7 @@
 
 - **路径**：`/bot/sessions/list`
 - **方法**：`POST`
-- **说明**：返回当前已持久化的会话列表，字段形态与 nanobot 示例中的 listSessions 对齐。
+- **说明**：返回当前已持久化的会话列表，字段形态与 nanobot 示例中的 listSessions 对齐。底层按 **`created_at` 倒序** 排列（新建会话在前）；`title` 来自 PostgreSQL `nanobot_session.title` 列（旧数据可能为空，此时列表可能回退展示 `metadata_json` 中的 `title`，兼容 WebUI 等历史形态）。
 
 ### 请求体
 
@@ -27,9 +27,9 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | key | string | 会话标识，例如 `api:xxxx` |
-| created_at | string / null | 创建时间（由底层会话管理器提供） |
-| updated_at | string / null | 更新时间 |
-| title | string | 标题，可能为空字符串 |
+| created_at | string / null | 创建时间 |
+| updated_at | string / null | 最后更新时间 |
+| title | string | 展示标题；未改名时通常由首条用户提问摘要生成；用户通过「修改标题」接口改名后会写入本字段并标记元数据 `title_user_edited`，避免被默认逻辑覆盖 |
 | preview | string | 预留，当前固定为空字符串 |
 
 ### 示例
@@ -72,7 +72,37 @@ Content-Type: application/json
 
 ---
 
-## 3. 查询会话历史
+## 3. 修改会话标题
+
+- **路径**：`/bot/sessions/title`
+- **方法**：`POST`
+- **说明**：重命名已存在的会话（写入 `nanobot_session.title`，并设置元数据 `title_user_edited`，后续保存不会因「首问摘要」逻辑覆盖标题）。会话必须在数据库中已存在（至少落库过一次）；`title` 去空格后不能为空。
+
+### 请求体（JSON）
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| key | string | 是 | 会话 key |
+| title | string | 是 | 新标题，长度 1～512（与 `SessionTitleIn` 校验一致） |
+
+### 响应体（JSON）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| updated | boolean | 是否更新成功（会话不存在或标题非法时为 `false`） |
+
+### 示例
+
+```http
+POST /api/v1/bot/sessions/title
+Content-Type: application/json
+
+{"key": "api:my-thread-001", "title": "复盘笔记"}
+```
+
+---
+
+## 4. 查询会话历史
 
 - **路径**：`/bot/sessions/history`
 - **方法**：`POST`
@@ -116,7 +146,7 @@ Content-Type: application/json
 
 ---
 
-## 4. 流式聊天
+## 5. 流式聊天
 
 - **路径**：`/bot/chat`
 - **方法**：`POST`
@@ -162,3 +192,4 @@ Content-Type: application/json
 - 控制器：`api/controllers/bot.py`
 - 业务逻辑：`api/services/bot_service.py`（懒加载 `Nanobot.from_config()`，会话与 Agent 循环与 nanobot 集成）
 - 与 nanobot HTTP 约定一致的内部常量：`API_CHAT_ID = "default"`，渠道为 `api`。
+- 会话主表 `nanobot_session` 含独立 **`title`** 列（展示用）；首次持久化时由 `SessionManager` / `effective_session_title_for_persist` 按规则写入（含首问摘要、WebUI 元数据标题、用户改名等优先级）。已有库需执行 `api/scripts/create_nanobot_tables.py` 以 **`ADD COLUMN IF NOT EXISTS`** 补列（脚本内对 `nanobot_session` 在刷新 COMMENT 前会先补 `title` 列）。

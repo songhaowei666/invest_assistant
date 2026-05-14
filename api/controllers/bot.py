@@ -19,6 +19,13 @@ class SessionKeyIn(BaseModel):
     key: str = Field(..., description="会话 key，例如 api:xxxx")
 
 
+class SessionTitleIn(BaseModel):
+    """修改会话标题（类似豆包侧栏重命名）。"""
+
+    key: str = Field(..., description="会话 key，例如 api:xxxx")
+    title: str = Field(..., min_length=1, max_length=512, description="新标题")
+
+
 class SessionHistoryIn(BaseModel):
     """会话历史请求体。"""
 
@@ -43,6 +50,12 @@ async def bot_sessions_list(_payload: dict[str, Any] = Body(default_factory=dict
 async def bot_sessions_delete(body: SessionKeyIn) -> dict[str, Any]:
     """2. 删除会话。"""
     return await bot_service.delete_session_json(body.key)
+
+
+@router.post("/sessions/title")
+async def bot_sessions_update_title(body: SessionTitleIn) -> dict[str, Any]:
+    """重命名会话标题（须为已存在的会话）。"""
+    return await bot_service.update_session_title_json(body.key, body.title)
 
 
 @router.post("/sessions/history")

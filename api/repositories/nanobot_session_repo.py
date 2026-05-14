@@ -47,6 +47,7 @@ class NanobotSessionRepo:
               "key": session_key,
               "created_at": iso str | None,
               "updated_at": iso str | None,
+              "title": str,
               "metadata": dict,
               "last_consolidated": int,
               "messages": [dict, ...],
@@ -72,6 +73,7 @@ class NanobotSessionRepo:
                 "key": row.session_key,
                 "created_at": _to_iso(row.created_at),
                 "updated_at": _to_iso(row.updated_at),
+                "title": (row.title or "").strip(),
                 "metadata": dict(row.metadata_json or {}),
                 "last_consolidated": int(row.last_consolidated or 0),
                 "messages": [dict(m.payload_json or {}) for m in msgs],
@@ -95,6 +97,7 @@ class NanobotSessionRepo:
         session_key: str,
         created_at: datetime,
         updated_at: datetime,
+        title: str,
         metadata: dict[str, Any],
         last_consolidated: int,
         messages: list[dict[str, Any]],
@@ -104,6 +107,8 @@ class NanobotSessionRepo:
         消息同步策略：
         - 若 DB 现有消息数 <= len(messages) 且前缀一致（按 seq），仅追加缺失的消息。
         - 否则整体重写（先清空再批量插入），覆盖 retain_recent_legal_suffix 类场景。
+
+        title 为写入 nanobot_session.title 的最终展示串（由 SessionManager 计算）。
         """
         with SessionLocal() as db:
             row = db.scalar(
@@ -115,6 +120,7 @@ class NanobotSessionRepo:
                 row = NanobotSession(
                     user_id=user_id,
                     session_key=session_key,
+                    title=title[:512] if title else None,
                     metadata_json=dict(metadata or {}),
                     last_consolidated=int(last_consolidated or 0),
                     created_at=created_at,
@@ -122,6 +128,7 @@ class NanobotSessionRepo:
                 )
                 db.add(row)
             else:
+                row.title = title[:512] if title else None
                 row.metadata_json = dict(metadata or {})
                 row.last_consolidated = int(last_consolidated or 0)
                 row.updated_at = updated_at
@@ -207,25 +214,28 @@ class NanobotSessionRepo:
             return bool(result.rowcount or 0)
 
     def list_sessions(self, user_id: str) -> list[dict[str, Any]]:
-        """返回会话简要信息列表，按 updated_at 倒序。"""
+        """返回会话简要信息列表，按 created_at 倒序（新建在上）。"""
         with SessionLocal() as db:
             rows = list(
                 db.scalars(
                     select(NanobotSession)
                     .where(NanobotSession.user_id == user_id)
-                    .order_by(NanobotSession.updated_at.desc())
+                    .order_by(NanobotSession.created_at.desc())
                 )
             )
             out: list[dict[str, Any]] = []
             for r in rows:
                 meta = dict(r.metadata_json or {})
-                title = meta.get("title") if isinstance(meta.get("title"), str) else ""
+                col_title = (getattr(r, "title", None) or "").strip()
+                # 旧会话仅 metadata 里可能有 title（如 WebUI），列空白时不强制迁移
+                meta_title = meta.get("title") if isinstance(meta.get("title"), str) else ""
+                display_title = col_title or meta_title.strip()
                 out.append(
                     {
                         "key": r.session_key,
                         "created_at": _to_iso(r.created_at),
                         "updated_at": _to_iso(r.updated_at),
-                        "title": title,
+                        "title": display_title,
                         "path": "",  # PG 化后无文件路径，保留字段兼容上层
                     }
                 )

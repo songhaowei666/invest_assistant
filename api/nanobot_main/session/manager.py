@@ -7,6 +7,8 @@ delete / read_session_file / flush_all 等访问磁盘的方法为 PG 调用。
 历史的 jsonl 读写、_repair、legacy 迁移逻辑作为代码保留以便参考但不会被触发。
 """
 
+from __future__ import annotations
+
 import json
 import os
 import shutil
@@ -34,6 +36,45 @@ from repositories.nanobot_session_repo import NanobotSessionRepo  # noqa: E402
 FILE_MAX_MESSAGES = 2000
 
 
+def _clip_session_title(text: str, max_chars: int) -> str:
+    """截断列表标题，避免过长；与 WebUI 标题长度习惯一致。"""
+    t = (text or "").strip()
+    if not t:
+        return ""
+    if max_chars <= 0 or len(t) <= max_chars:
+        return t
+    return t[: max_chars - 1].rstrip() + "…"
+
+
+def _first_user_snippet_for_title(messages: list[dict[str, Any]], max_chars: int = 60) -> str:
+    """取首条非空用户文本作为默认会话标题（新建会话）。"""
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return _clip_session_title(content, max_chars)
+    return ""
+
+
+def effective_session_title_for_persist(session: Session) -> str:
+    """计算写入 PG 的 title 列：用户改名 > WebUI 元数据标题 > 已有列值 > 首条用户提问。
+
+    与 nanobot_main.utils.webui_titles 中 webui / title / title_user_edited 语义保持一致。
+    """
+    meta = session.metadata or {}
+    if meta.get("title_user_edited") is True:
+        return _clip_session_title(session.title, 512)
+    if meta.get("webui") is True:
+        raw = meta.get("title")
+        if isinstance(raw, str) and raw.strip():
+            return _clip_session_title(raw, 512)
+    existing = (session.title or "").strip()
+    if existing:
+        return _clip_session_title(existing, 512)
+    return _clip_session_title(_first_user_snippet_for_title(session.messages), 512)
+
+
 @dataclass
 class Session:
     """A conversation session."""
@@ -43,6 +84,8 @@ class Session:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # 与会话主表 nanobot_session.title 同步，供列表展示；默认由首条用户提问推导
+    title: str = ""
     last_consolidated: int = 0  # Number of messages already consolidated to files
 
     @staticmethod
@@ -328,6 +371,7 @@ class SessionManager:
                 created_at=created_at,
                 updated_at=updated_at,
                 metadata=dict(payload.get("metadata") or {}),
+                title=str(payload.get("title") or ""),
                 last_consolidated=int(payload.get("last_consolidated", 0) or 0),
             )
         except Exception as e:
@@ -395,6 +439,7 @@ class SessionManager:
             "key": session.key,
             "created_at": session.created_at.isoformat(),
             "updated_at": session.updated_at.isoformat(),
+            "title": session.title,
             "metadata": session.metadata,
             "messages": session.messages,
         }
@@ -407,15 +452,18 @@ class SessionManager:
         """
         user_id = get_user_id()
         try:
+            effective = effective_session_title_for_persist(session)
             self._repo.save_session(
                 user_id=user_id,
                 session_key=session.key,
                 created_at=session.created_at,
                 updated_at=session.updated_at,
+                title=effective,
                 metadata=session.metadata or {},
                 last_consolidated=session.last_consolidated,
                 messages=list(session.messages or []),
             )
+            session.title = effective
         except Exception:
             logger.exception("Failed to save session {} for user {}", session.key, user_id)
             raise
@@ -458,7 +506,7 @@ class SessionManager:
     def read_session_file(self, key: str) -> dict[str, Any] | None:
         """从 PG 读取会话全量（不进缓存），供只读 HTTP 接口使用。
 
-        返回结构：``{"key", "created_at", "updated_at", "metadata", "messages"}``，
+        返回结构：``{"key", "created_at", "updated_at", "title", "metadata", "messages"}``，
         会话不存在时返回 ``None``。
         """
         user_id = get_user_id()
@@ -475,6 +523,7 @@ class SessionManager:
             "key": payload.get("key", key),
             "created_at": payload.get("created_at"),
             "updated_at": payload.get("updated_at"),
+            "title": str(payload.get("title") or ""),
             "metadata": dict(payload.get("metadata") or {}),
             "messages": list(payload.get("messages") or []),
         }
@@ -484,7 +533,8 @@ class SessionManager:
         List all sessions for current user.
 
         Returns:
-            List of session info dicts: ``{key, created_at, updated_at, title, path}``。
+            List of session info dicts: ``{key, created_at, updated_at, title, path}``，
+            顺序为按 ``created_at`` 倒序（新建在上）。
         """
         user_id = get_user_id()
         try:
@@ -492,3 +542,26 @@ class SessionManager:
         except Exception:
             logger.exception("Failed to list sessions for user {}", user_id)
             return []
+
+    def update_session_title(self, key: str, new_title: str) -> bool:
+        """用户重命名会话（写入 title 列并标记 title_user_edited，避免被首问默认逻辑覆盖）。"""
+        user_id = get_user_id()
+        clipped = _clip_session_title(new_title, 512)
+        if not clipped:
+            return False
+        try:
+            if self._repo.get_session_row(user_id, key) is None:
+                return False
+        except Exception:
+            logger.exception("Failed to check session {} for user {}", key, user_id)
+            return False
+        session = self.get_or_create(key)
+        session.title = clipped
+        session.metadata["title_user_edited"] = True
+        session.updated_at = datetime.now()
+        try:
+            self.save(session)
+        except Exception:
+            logger.exception("Failed to rename session {} for user {}", key, user_id)
+            return False
+        return True

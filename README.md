@@ -6,7 +6,7 @@
 
 - 持仓管理：持仓列表查询、批量新增/删除/修改、股票名称联想、按代码查询价格与股息率（数据来自 `stock_basic_info`）
 - 透视盈余：按当前持仓关联估值快照与年报，并提供按市值加权的组合透视指标（独立接口 `GET /earnings-lens`，见 `docs/api/earnings-lens-api.md`）
-- 投资助手：基于会话的流式对话（SSE）
+- 投资助手：基于会话的流式对话（SSE）；会话列表按创建时间排序；支持修改会话标题、侧栏删除确认（非系统 `confirm`）；助手气泡内 Markdown 压缩多余空行与收紧行距
 - 投研数问：自然语言问题转 SQL，返回查询结果与中文总结，并支持会话管理
 - 前后端分离：后端 FastAPI + SQLAlchemy，前端 React + Vite
 
@@ -62,9 +62,9 @@ cd api
 python3 scripts/create_nanobot_tables.py
 ```
 
-脚本会创建（或确认存在）以下 7 张表，并刷新 PostgreSQL `COMMENT ON`：
+脚本会创建（或确认存在）以下 7 张表，并刷新 PostgreSQL `COMMENT ON`；对**已存在**的 `nanobot_session` 表会执行 **`ADD COLUMN IF NOT EXISTS title`**（展示用会话标题），再写入列备注：
 
-- `nanobot_session`
+- `nanobot_session`（含 `title` 列，旧行可为空）
 - `nanobot_session_message`
 - `nanobot_cron_job`
 - `nanobot_memory_file`
@@ -103,7 +103,7 @@ python3 scripts/create_nanobot_tables.py
 
 - `持仓数据`：对应 `positions` 下列表与增删改等接口
 - `透视盈余`：对应 `GET /earnings-lens`；展示每行快照与年报摘要，以及 `mcWeighted` 市值加权组合指标（缺失市值按 0、无样本时加权为 0）
-- `投资助手`：对应 `/bot/*` 会话与流式聊天接口
+- `投资助手`：对应 `/bot/*` 会话与流式聊天接口（详见 `docs/api/bot--api.md`；列表按 `created_at` 倒序；前端列表请求带 Abort，避免并发刷新覆盖新标题）
 - `投研数问`：对应 `/sql-copilot/*` 会话与问答接口
 
 前端默认请求后端地址为：`http://localhost:8000/api/v1`。
@@ -114,14 +114,14 @@ python3 scripts/create_nanobot_tables.py
 
 - `positions`：`GET /positions`、`POST /positions/add`、`POST /positions/delete`、`POST /positions/modify`、`GET /positions/stock-name-suggest`、`GET /positions/price-dividend`
 - `earnings-lens`：`GET /earnings-lens`（独立控制器，详见 `docs/api/earnings-lens-api.md`）
-- `bot`：`/bot/sessions/list`、`/bot/sessions/history`、`/bot/sessions/delete`、`/bot/chat`
+- `bot`：`/bot/sessions/list`、`/bot/sessions/history`、`/bot/sessions/delete`、`/bot/sessions/title`（修改标题）、`/bot/chat`
 - `sql-copilot`：`/sql-copilot/chat`、`/sql-copilot/query-scope`、`/sql-copilot/sessions/*`
 
 ## Bot 存储说明（重要更新）
 
 当前 `bot` 对话链路已从 workspace 文件存储切换为 PostgreSQL：
 
-- 会话：原 `api/.nanobot/sessions/*.jsonl` → `nanobot_session` + `nanobot_session_message`
+- 会话：原 `api/.nanobot/sessions/*.jsonl` → `nanobot_session`（含 **`title`** 展示列 + `metadata_json`）+ `nanobot_session_message`
 - 定时任务：原 `api/.nanobot/cron/jobs.json` → `nanobot_cron_job`
 - 记忆：原 `SOUL.md`/`USER.md`/`memory/MEMORY.md`/`memory/history.jsonl` → `nanobot_memory_*` 系列表
 

@@ -146,6 +146,14 @@ async def delete_session_json(key: str) -> dict[str, Any]:
     return {"deleted": deleted}
 
 
+async def update_session_title_json(key: str, title: str) -> dict[str, Any]:
+    """重命名会话：会话不存在或标题为空时 updated 为 False。"""
+    nb = await ensure_nanobot()
+    with use_user_id(DEFAULT_USER_ID):
+        updated = nb._loop.sessions.update_session_title(key, title)
+    return {"updated": updated}
+
+
 async def session_history_json(key: str, limit: int = 30) -> dict[str, Any]:
     nb = await ensure_nanobot()
     sm = nb._loop.sessions

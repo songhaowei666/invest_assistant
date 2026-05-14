@@ -59,6 +59,18 @@ def _apply_pg_comments_for_table(conn, table) -> None:
             )
 
 
+def _ensure_nanobot_session_title_column(conn) -> None:
+    """已有库仅执行过旧版建表时无 title 列，在此补列（不回填历史数据）。
+
+    必须在 COMMENT ON COLUMN ... title 之前执行：checkfirst 建表不会给已存在的表加新列。
+    """
+    conn.execute(
+        text(
+            'ALTER TABLE "nanobot_session" ADD COLUMN IF NOT EXISTS "title" VARCHAR(512)'
+        )
+    )
+
+
 def main() -> None:
     dialect = engine.url.get_dialect().name
     if dialect != "postgresql":
@@ -70,6 +82,8 @@ def main() -> None:
     with engine.begin() as conn:
         for table in tables:
             table.create(bind=conn, checkfirst=True)
+            if table.name == "nanobot_session":
+                _ensure_nanobot_session_title_column(conn)
             _apply_pg_comments_for_table(conn, table)
 
     names = ", ".join(_pg_qualified_table_name(t) for t in tables)

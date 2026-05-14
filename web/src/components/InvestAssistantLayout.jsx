@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { botDeleteSession, botListSessions, botSessionHistoryMessages, streamBotChat } from '../lib/botApi'
+import { botDeleteSession, botListSessions, botSessionHistoryMessages, botUpdateSessionTitle, streamBotChat } from '../lib/botApi'
 
 /** 生成新会话 key（与文档示例 api:xxxx 一致） */
 function newSessionKey() {
   return `api:${crypto.randomUUID()}`
 }
 
-/** 会话列表按更新时间倒序（字符串比较，ISO 日期可排序） */
+/** 会话列表按创建时间倒序（新会话在上；ISO 字符串可字典序比较；无 created_at 时退化为 key） */
 function sortSessionsDesc(rows) {
   return [...rows].sort((a, b) => {
-    const ta = (a.updated_at || a.created_at || '') + String(a.key)
-    const tb = (b.updated_at || b.created_at || '') + String(b.key)
+    const ta = (a.created_at || '') + String(a.key)
+    const tb = (b.created_at || '') + String(b.key)
     return tb.localeCompare(ta)
   })
 }
@@ -39,11 +39,19 @@ function shouldRenderMessage(message) {
   return message.role === 'user' || message.role === 'assistant'
 }
 
+/** 将模型输出中连续多行空行压成最多一行空行，减少 Markdown 分段后的大块留白 */
+function normalizeChatMarkdownSource(raw) {
+  if (typeof raw !== 'string') return ''
+  return raw
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trimEnd()
+}
+
 /** 聊天内容统一走 Markdown 渲染，普通文本也可正常展示 */
 function MessageContent({ content }) {
-  return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-  )
+  const text = normalizeChatMarkdownSource(content)
+  return <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
 }
 
 export default function InvestAssistantLayout({ apiBase }) {
@@ -60,56 +68,73 @@ export default function InvestAssistantLayout({ apiBase }) {
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamError, setStreamError] = useState('')
 
+  /** 删除确认：待删除的 session key；null 表示未打开对话框 */
+  const [deleteConfirmKey, setDeleteConfirmKey] = useState(null)
+  const [deleteError, setDeleteError] = useState('')
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false)
+
   const abortRef = useRef(null)
+  /** 取消尚未完成的会话列表请求，避免后返回的旧响应覆盖新数据（如改名后标题被首问摘要顶回） */
+  const listSessionsAbortRef = useRef(null)
 
   /** 刷新会话列表（按钮、删除后调用；不在 effect 中直接引用以避免 lint） */
   const refreshSessions = useCallback(async () => {
+    listSessionsAbortRef.current?.abort()
+    const ac = new AbortController()
+    listSessionsAbortRef.current = ac
     setSessionsError('')
     setSessionsLoading(true)
     try {
-      const list = await botListSessions(apiBase)
+      const list = await botListSessions(apiBase, { signal: ac.signal })
       const sorted = sortSessionsDesc(list)
       setSessions(sorted)
       return sorted
     } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') {
+        return []
+      }
       setSessionsError(e instanceof Error ? e.message : '加载会话失败')
       return []
     } finally {
+      if (listSessionsAbortRef.current === ac) {
+        listSessionsAbortRef.current = null
+      }
       setSessionsLoading(false)
     }
   }, [apiBase])
 
   useEffect(() => {
     let cancelled = false
-    ;(async () => {
-      setSessionsError('')
-      setSessionsLoading(true)
-      try {
-        const list = await botListSessions(apiBase)
-        if (cancelled) return
-        const sorted = sortSessionsDesc(list)
-        setSessions(sorted)
-        setSelectedKey((prev) => prev ?? sorted[0]?.key ?? null)
-      } catch (e) {
-        if (!cancelled) {
-          setSessionsError(e instanceof Error ? e.message : '加载会话失败')
-        }
-      } finally {
-        if (!cancelled) {
-          setSessionsLoading(false)
-        }
-      }
+    void (async () => {
+      const sorted = await refreshSessions()
+      if (cancelled) return
+      setSelectedKey((prev) => prev ?? sorted[0]?.key ?? null)
     })()
     return () => {
       cancelled = true
+      listSessionsAbortRef.current?.abort()
     }
-  }, [apiBase])
+  }, [apiBase, refreshSessions])
 
   useEffect(() => {
     return () => {
       abortRef.current?.abort()
     }
   }, [])
+
+  useEffect(() => {
+    if (!deleteConfirmKey) return undefined
+    const onKeyDown = (ev) => {
+      if (ev.key === 'Escape') {
+        if (deleteSubmitting) return
+        ev.preventDefault()
+        setDeleteConfirmKey(null)
+        setDeleteError('')
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [deleteConfirmKey, deleteSubmitting])
 
   useEffect(() => {
     abortRef.current?.abort()
@@ -154,25 +179,35 @@ export default function InvestAssistantLayout({ apiBase }) {
     [apiBase],
   )
 
-  /** 侧栏展示：服务端列表 + 当前选中但尚未出现在列表中的新会话 */
+  /** 侧栏：先按创建时间排序服务端列表；当前选中且未落库的会话固定置顶展示 */
   const displaySessions = useMemo(() => {
     const keys = new Set(sessions.map((s) => s.key))
-    const merged = [...sessions]
+    const sorted = sortSessionsDesc(sessions)
     if (selectedKey && !keys.has(selectedKey)) {
-      merged.unshift({
-        key: selectedKey,
-        title: '新会话',
-        created_at: null,
-        updated_at: null,
-        preview: '',
-      })
+      return [
+        {
+          key: selectedKey,
+          title: '新会话',
+          created_at: null,
+          updated_at: null,
+          preview: '',
+        },
+        ...sorted,
+      ]
     }
-    return sortSessionsDesc(merged)
+    return sorted
   }, [sessions, selectedKey])
 
   const displayMessages = useMemo(() => {
     return messages.filter(shouldRenderMessage)
   }, [messages])
+
+  const sessionTitle = (s) => {
+    const t = (s.title || '').trim()
+    if (t) return t
+    const k = s.key || ''
+    return k.length > 28 ? `${k.slice(0, 14)}…${k.slice(-8)}` : k || '未命名'
+  }
 
   const handleNewChat = () => {
     abortRef.current?.abort()
@@ -188,18 +223,65 @@ export default function InvestAssistantLayout({ apiBase }) {
     setSelectedKey(key)
   }
 
-  const handleDeleteSession = async (key, ev) => {
+  const handleRenameSession = async (s, ev) => {
     ev.stopPropagation()
-    if (!window.confirm('确定删除该会话？删除后无法恢复。')) return
+    const key = s.key
+    const existsOnServer = sessions.some((row) => row.key === key)
+    if (!existsOnServer) {
+      window.alert('请先发一条消息保存会话后再修改标题')
+      return
+    }
+    const current = sessionTitle(s)
+    const input = window.prompt('修改会话标题', current)
+    if (input == null) return
+    const title = input.trim()
+    if (!title) {
+      window.alert('标题不能为空')
+      return
+    }
+    try {
+      const data = await botUpdateSessionTitle(apiBase, key, title)
+      if (!data?.updated) {
+        window.alert('修改失败：会话不存在或无权限')
+        return
+      }
+      await refreshSessions()
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : '修改标题失败')
+    }
+  }
+
+  const openDeleteConfirm = (key, ev) => {
+    ev.stopPropagation()
+    setDeleteError('')
+    setDeleteSubmitting(false)
+    setDeleteConfirmKey(key)
+  }
+
+  const closeDeleteConfirm = () => {
+    if (deleteSubmitting) return
+    setDeleteConfirmKey(null)
+    setDeleteError('')
+  }
+
+  const confirmDeleteSession = async () => {
+    const key = deleteConfirmKey
+    if (!key || deleteSubmitting) return
+    setDeleteError('')
+    setDeleteSubmitting(true)
     try {
       await botDeleteSession(apiBase, key)
+      setDeleteConfirmKey(null)
+      setDeleteError('')
       const list = await refreshSessions()
       setSelectedKey((prev) => {
         if (prev !== key) return prev
         return list[0]?.key ?? null
       })
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : '删除失败')
+      setDeleteError(e instanceof Error ? e.message : '删除失败')
+    } finally {
+      setDeleteSubmitting(false)
     }
   }
 
@@ -281,13 +363,6 @@ export default function InvestAssistantLayout({ apiBase }) {
     }
   }
 
-  const sessionTitle = (s) => {
-    const t = (s.title || '').trim()
-    if (t) return t
-    const k = s.key || ''
-    return k.length > 28 ? `${k.slice(0, 14)}…${k.slice(-8)}` : k || '未命名'
-  }
-
   return (
     <div className="invest-assistant">
       <aside className="invest-assistant__sidebar" aria-label="会话历史">
@@ -318,15 +393,41 @@ export default function InvestAssistantLayout({ apiBase }) {
               >
                 <div className="invest-assistant__session-row">
                   <span className="invest-assistant__session-title">{sessionTitle(s)}</span>
-                  <button
-                    type="button"
-                    className="invest-assistant__session-del"
-                    title="删除会话"
-                    aria-label="删除会话"
-                    onClick={(ev) => void handleDeleteSession(s.key, ev)}
-                  >
-                    ×
-                  </button>
+                  <div className="invest-assistant__session-actions">
+                    <button
+                      type="button"
+                      className="invest-assistant__session-rename"
+                      title="修改标题"
+                      aria-label="修改标题"
+                      onClick={(ev) => void handleRenameSession(s, ev)}
+                    >
+                      <svg
+                        className="invest-assistant__session-rename-icon"
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M12 20h9" />
+                        <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      className="invest-assistant__session-del"
+                      title="删除会话"
+                      aria-label="删除会话"
+                      onClick={(ev) => void openDeleteConfirm(s.key, ev)}
+                    >
+                      ×
+                    </button>
+                  </div>
                 </div>
                 {(s.updated_at || s.created_at) && (
                   <span className="invest-assistant__session-meta">{s.updated_at || s.created_at}</span>
@@ -414,6 +515,41 @@ export default function InvestAssistantLayout({ apiBase }) {
           </>
         )}
       </section>
+
+      {deleteConfirmKey ? (
+        <div
+          className="invest-assistant__modal-backdrop"
+          role="presentation"
+          onClick={deleteSubmitting ? undefined : closeDeleteConfirm}
+        >
+          <div
+            className="invest-assistant__modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="invest-assistant-delete-title"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <h3 id="invest-assistant-delete-title" className="invest-assistant__modal-title">
+              删除会话
+            </h3>
+            <p className="invest-assistant__modal-text">确定删除该会话？删除后无法恢复。</p>
+            {deleteError ? <p className="invest-assistant__modal-error">{deleteError}</p> : null}
+            <div className="invest-assistant__modal-actions">
+              <button type="button" className="invest-assistant__modal-btn" disabled={deleteSubmitting} onClick={closeDeleteConfirm}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="invest-assistant__modal-btn invest-assistant__modal-btn--danger"
+                disabled={deleteSubmitting}
+                onClick={() => void confirmDeleteSession()}
+              >
+                {deleteSubmitting ? '删除中…' : '删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -2,18 +2,32 @@
  * 投资助手 Bot HTTP 封装（与 docs/bot--api.md 一致）
  */
 
-/** 拉取会话列表 */
-export async function botListSessions(apiBase) {
+/** 拉取会话列表；signal 用于取消过期请求，避免并发 list 后返回的旧数据覆盖新标题 */
+export async function botListSessions(apiBase, { signal } = {}) {
   const res = await fetch(`${apiBase}/bot/sessions/list`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: '{}',
+    signal,
   })
   if (!res.ok) {
     throw new Error(`sessions/list 请求失败: ${res.status}`)
   }
   const data = await res.json()
   return Array.isArray(data.sessions) ? data.sessions : []
+}
+
+/** 修改会话标题（须为服务端已存在的会话） */
+export async function botUpdateSessionTitle(apiBase, key, title) {
+  const res = await fetch(`${apiBase}/bot/sessions/title`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, title }),
+  })
+  if (!res.ok) {
+    throw new Error(`sessions/title 请求失败: ${res.status}`)
+  }
+  return res.json()
 }
 
 /** 删除会话 */

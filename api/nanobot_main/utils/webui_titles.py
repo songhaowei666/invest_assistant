@@ -71,6 +71,8 @@ async def maybe_generate_webui_title(
     current_title = session.metadata.get(WEBUI_TITLE_METADATA_KEY)
     if isinstance(current_title, str) and current_title.strip():
         return False
+    if (session.title or "").strip():
+        return False
 
     user_text, assistant_text = _title_inputs(session)
     if not user_text:
