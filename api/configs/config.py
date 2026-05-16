@@ -1,7 +1,7 @@
 from pathlib import Path
 from urllib.parse import quote_plus
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # api 目录，用于固定加载 api/.env（与工作目录无关）
@@ -47,6 +47,35 @@ class Settings(BaseSettings):
     # 逗号分隔的模块路径，如 tasks.example（供 autodiscover / worker 加载）
     CELERY_IMPORTS: str = ""
     CELERY_TASK_ANNOTATIONS: dict | None = None
+
+    # Redis（业务缓存，与 Celery broker 可共用实例、不同 DB）
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_USERNAME: str = ""
+    REDIS_PASSWORD: str = ""
+    REDIS_DB: int = 0
+    REDIS_USE_SSL: bool = False
+    REDIS_USE_SENTINEL: bool = False
+    REDIS_SENTINELS: str = ""
+    REDIS_SENTINEL_SERVICE_NAME: str = ""
+    REDIS_SENTINEL_USERNAME: str = ""
+    REDIS_SENTINEL_PASSWORD: str = ""
+    REDIS_SENTINEL_SOCKET_TIMEOUT: float = 0.1
+    REDIS_USE_CLUSTERS: bool = False
+    REDIS_CLUSTERS: str = ""
+    REDIS_CLUSTERS_PASSWORD: str = ""
+    REDIS_SERIALIZATION_PROTOCOL: int = 3
+    REDIS_ENABLE_CLIENT_SIDE_CACHE: bool = False
+    REDIS_MAX_CONNECTIONS: int | None = None
+
+    @field_validator("REDIS_MAX_CONNECTIONS", mode="before")
+    @classmethod
+    def _empty_redis_max_connections(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
 
     model_config = SettingsConfigDict(
         env_file=_API_DIR / ".env",

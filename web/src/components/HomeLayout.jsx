@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import EarningsLensLayout from './EarningsLensLayout'
 import InvestAssistantLayout from './InvestAssistantLayout'
 import ResearchQaLayout from './ResearchQaLayout'
+import ScheduledTasksLayout from './ScheduledTasksLayout'
 import StockList from './StockList'
 
 const API_BASE = 'http://localhost:8000/api/v1'
@@ -107,10 +108,17 @@ function HomeLayout() {
           >
             投研数问
           </button>
+          <button
+            type="button"
+            className={`top-nav__item top-nav__item--clickable ${activePage === 'scheduled-tasks' ? 'top-nav__item--active' : ''}`}
+            onClick={() => setActivePage('scheduled-tasks')}
+          >
+            定时任务
+          </button>
         </div>
       </nav>
       <main
-        className={`home-layout ${activePage !== 'stocks' && activePage !== 'earnings-lens' ? 'home-layout--assistant' : ''} ${activePage === 'earnings-lens' ? 'home-layout--earnings-lens' : ''}`}
+        className={`home-layout ${activePage !== 'stocks' && activePage !== 'earnings-lens' && activePage !== 'scheduled-tasks' ? 'home-layout--assistant' : ''} ${activePage === 'earnings-lens' ? 'home-layout--earnings-lens' : ''} ${activePage === 'scheduled-tasks' ? 'home-layout--scheduled-tasks' : ''}`}
       >
         {activePage === 'stocks' ? (
           <>
@@ -130,6 +138,7 @@ function HomeLayout() {
           <InvestAssistantLayout apiBase={API_BASE} />
         ) : null}
         {activePage === 'research-qa' ? <ResearchQaLayout apiBase={API_BASE} /> : null}
+        {activePage === 'scheduled-tasks' ? <ScheduledTasksLayout apiBase={API_BASE} /> : null}
       </main>
     </div>
   )

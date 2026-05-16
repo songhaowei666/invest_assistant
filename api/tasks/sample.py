@@ -21,6 +21,7 @@ from celery import shared_task  # type: ignore[import-untyped]
 @shared_task(name="tasks.sample.ping")
 def ping() -> str:
     """简单连通性任务。"""
+    print("ping")
     return "pong"
 
 
@@ -29,6 +30,18 @@ def echo(self, text: str) -> str:
     """回显字符串；``bind=True`` 时第一个参数为任务实例。"""
     return text
 
+
+if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+
+    api_dir = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(api_dir))
+
+    import extensions.ext_celery  # 加载 .env 里的 Redis broker
+
+    result = echo.delay("hello")
+    print("task id:", result.id)
 
 # 在已 ``init_extensions`` 的 FastAPI 路由中投递任务示例（需已配置 ``CELERY_BROKER_URL``）：
 #

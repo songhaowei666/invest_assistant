@@ -63,6 +63,141 @@
   overflow: hidden;
 }
 
+.home-layout--scheduled-tasks {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 定时任务页 */
+.scheduled-tasks {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 24px 24px;
+  box-sizing: border-box;
+  background: #f3f6fc;
+  overflow: auto;
+}
+
+.scheduled-tasks__header {
+  flex-shrink: 0;
+  padding: 20px 0 12px;
+}
+
+.scheduled-tasks__title {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 600;
+  color: #1d2638;
+}
+
+.scheduled-tasks__subtitle {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #5c6b82;
+}
+
+.scheduled-tasks__toolbar {
+  flex-shrink: 0;
+  margin-bottom: 12px;
+}
+
+.scheduled-tasks__status {
+  margin: 0 0 12px;
+}
+
+.scheduled-tasks__empty {
+  margin: 24px 0;
+  color: #5c6b82;
+  font-size: 14px;
+}
+
+.scheduled-tasks-table-wrapper {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.scheduled-tasks-table {
+  table-layout: auto;
+}
+
+.scheduled-tasks-table th,
+.scheduled-tasks-table td {
+  vertical-align: top;
+}
+
+.scheduled-tasks__code {
+  font-size: 13px;
+  color: #2c3e63;
+  word-break: break-all;
+}
+
+.scheduled-tasks__log {
+  max-width: 240px;
+  font-size: 13px;
+  color: #4f607f;
+  word-break: break-word;
+}
+
+.scheduled-tasks__edit-btn {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid #cad6ed;
+  background: #ffffff;
+  color: #2c3e63;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.scheduled-tasks__edit-btn:hover {
+  background: #f0f5ff;
+  border-color: #3c7af8;
+  color: #1a4db3;
+}
+
+.scheduled-tasks-modal {
+  width: 480px;
+}
+
+.scheduled-tasks-form__label {
+  display: block;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: #31415f;
+}
+
+.scheduled-tasks-form__label .ai-modal__input {
+  margin-top: 6px;
+}
+
+.scheduled-tasks-form__checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 14px;
+  color: #31415f;
+  cursor: pointer;
+}
+
+.scheduled-tasks-form__select {
+  cursor: pointer;
+}
+
+.scheduled-tasks-form__hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #8a96ab;
+}
+
 /* 透视盈余页 */
 .earnings-lens {
   flex: 1;

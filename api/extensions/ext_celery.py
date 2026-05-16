@@ -50,6 +50,15 @@ def _parse_imports(raw: str) -> list[str]:
     return [p.strip() for p in raw.split(",") if p.strip()]
 
 
+def _merge_celery_imports(raw: str) -> list[str]:
+    """合并用户配置与内置 tasks.scheduler（定时任务 Beat 入口）。"""
+    modules = _parse_imports(raw)
+    for required in ("tasks.scheduler",):
+        if required not in modules:
+            modules.append(required)
+    return modules
+
+
 def _build_celery() -> Celery:
     """根据 Settings 构造 Celery 应用。"""
 
@@ -84,8 +93,9 @@ def _build_celery() -> Celery:
         worker_hijack_root_logger=False,
         timezone=settings.CELERY_LOG_TZ or "UTC",
         task_ignore_result=settings.CELERY_TASK_IGNORE_RESULT,
-        imports=_parse_imports(settings.CELERY_IMPORTS),
+        imports=_merge_celery_imports(settings.CELERY_IMPORTS),
         beat_schedule={},
+        beat_scheduler="core.scheduled_celery:DatabaseBeatScheduler",
     )
     if settings.CELERY_TASK_ANNOTATIONS is not None:
         celery.conf.update(task_annotations=settings.CELERY_TASK_ANNOTATIONS)
