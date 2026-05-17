@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from db import get_db
 from schemas.scheduled_task import (
+    BeatScheduleListResponse,
     ScheduledTaskDbRow,
     ScheduledTaskKeysResponse,
     ScheduledTaskListResponse,
@@ -18,6 +19,13 @@ router = APIRouter(prefix="/scheduled-tasks", tags=["scheduled-tasks"])
 def list_celery_task_keys() -> ScheduledTaskKeysResponse:
     """列出 api/tasks 包内 @shared_task 声明的 Celery 任务名。"""
     return ScheduledTaskKeysResponse(items=list_task_keys_from_tasks_package())
+
+
+@router.get("/beat-schedule", response_model=BeatScheduleListResponse)
+def list_beat_schedule(db: Session = Depends(get_db)) -> BeatScheduleListResponse:
+    """当前 Beat 将调度的任务（来自已启用的 DB 配置）。"""
+    service = ScheduledTaskService()
+    return service.list_beat_schedule(db)
 
 
 @router.get("", response_model=ScheduledTaskListResponse)

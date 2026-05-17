@@ -104,7 +104,48 @@
 
 .scheduled-tasks__toolbar {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 12px;
+}
+
+.scheduled-tasks__query-btn {
+  height: 36px;
+  padding: 0 14px;
+  font-size: 14px;
+  color: #1a4db3;
+  background: #fff;
+  border: 1px solid #3c7af8;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.scheduled-tasks__query-btn:hover {
+  background: #edf3ff;
+}
+
+.scheduled-tasks-beat-modal {
+  max-width: 960px;
+  width: min(96vw, 960px);
+}
+
+.scheduled-tasks-beat-modal__subtitle {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #5c6b82;
+}
+
+.scheduled-tasks-beat-modal__warn {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #b45309;
+}
+
+.scheduled-tasks-beat-modal__table-wrap {
+  max-height: 50vh;
+  overflow: auto;
 }
 
 .scheduled-tasks__status {

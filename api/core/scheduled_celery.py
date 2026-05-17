@@ -62,6 +62,31 @@ def build_beat_schedule_from_db(db: Session) -> dict[str, dict[str, Any]]:
     return schedule
 
 
+def list_beat_schedule_entries(db: Session) -> list[dict[str, Any]]:
+    """列出当前 Beat 将调度的条目（与 build_beat_schedule_from_db 一致）。"""
+    if get_celery_app_or_none() is None:
+        return []
+    stmt = (
+        select(ScheduledTask)
+        .where(ScheduledTask.enabled.is_(True))
+        .order_by(ScheduledTask.id.asc())
+    )
+    tasks = list(db.scalars(stmt).all())
+    entries: list[dict[str, Any]] = []
+    for task in tasks:
+        entries.append(
+            {
+                "beatKey": f"{BEAT_ENTRY_PREFIX}{task.id}",
+                "taskId": task.id,
+                "name": task.name,
+                "cronExpr": task.cron_expr,
+                "beatTask": RUN_SCHEDULED_TASK_NAME,
+                "targetTaskKey": task.task_key,
+            }
+        )
+    return entries
+
+
 def sync_beat_schedule(db: Session) -> dict[str, Any]:
     """从数据库刷新 Celery beat_schedule（API 启动与 CRUD 后调用）。"""
     app = get_celery_app_or_none()
@@ -76,12 +101,31 @@ def sync_beat_schedule(db: Session) -> dict[str, Any]:
 
 def send_celery_task(task_key: str, timeout: int | None = None) -> tuple[Any, str]:
     """投递并等待 Celery 任务完成，返回 (结果, 日志文本)。"""
+    from celery import current_task  # type: ignore[import-untyped]
+
     app = get_celery_app_or_none()
     if app is None:
         raise RuntimeError("未配置 CELERY_BROKER_URL，无法执行 Celery 任务")
     wait_timeout = timeout if timeout is not None else DEFAULT_TASK_TIMEOUT
+    log_lines = [f"task_key={task_key}"]
+
+    # Worker 内（尤其 solo 池）若 send_task + get 会占住唯一执行线程导致死锁，改同步 apply
+    if current_task is not None:
+        task = app.tasks.get(task_key)
+        if task is None:
+            raise RuntimeError(f"Celery 任务 {task_key!r} 未注册")
+        try:
+            eager = task.apply(throw=True)
+            result = eager.result
+            log_lines.append("mode=apply_in_worker")
+            log_lines.append(f"status=success result={result!r}")
+            return result, "\n".join(log_lines)
+        except Exception as exc:
+            log_lines.append(f"status=error error={exc!r}")
+            raise RuntimeError("\n".join(log_lines)) from exc
+
     async_result = app.send_task(task_key, ignore_result=False)
-    log_lines = [f"task_key={task_key}", f"celery_id={async_result.id}"]
+    log_lines.append(f"celery_id={async_result.id}")
     try:
         result = async_result.get(timeout=wait_timeout)
         log_lines.append(f"status=success result={result!r}")
@@ -147,9 +191,10 @@ class DatabaseBeatScheduler(Scheduler):
             logger.exception("从数据库加载 beat_schedule 失败")
             return
 
-        # 移除旧的 DB 条目，再合并最新配置
+        # 仅移除已删除/禁用的 DB 条目；用 merge_inplace 更新，保留 last_run_at，避免每 tick 重置错过 cron
+        incoming_keys = set(incoming.keys())
         for key in list(self.schedule.keys()):
-            if key.startswith(BEAT_ENTRY_PREFIX):
+            if key.startswith(BEAT_ENTRY_PREFIX) and key not in incoming_keys:
                 del self.schedule[key]
         self.merge_inplace(incoming)
         self.app.conf.beat_schedule = dict(self.schedule)

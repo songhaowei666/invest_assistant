@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   addScheduledTasks,
+  fetchBeatSchedule,
   fetchScheduledTaskKeys,
   fetchScheduledTasks,
   modifyScheduledTasks,
@@ -120,6 +121,77 @@ function TaskEditorModal({
   )
 }
 
+function BeatScheduleModal({ loading, errorMsg, brokerConfigured, items, onClose, onRetry }) {
+  return (
+    <div
+      className="ai-modal scheduled-tasks-modal scheduled-tasks-beat-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="beat-schedule-modal-title"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <h3 id="beat-schedule-modal-title">Beat 调度列表</h3>
+      <p className="scheduled-tasks-beat-modal__subtitle">
+        来自已启用的定时任务配置，与 Beat 进程 DatabaseBeatScheduler 加载逻辑一致。
+      </p>
+      {!brokerConfigured ? (
+        <p className="scheduled-tasks-beat-modal__warn">未配置 CELERY_BROKER_URL，Beat 无法调度任务。</p>
+      ) : null}
+      {loading ? <p className="status-text">加载中...</p> : null}
+      {!loading && errorMsg ? (
+        <p className="status-text status-text--error">
+          {errorMsg}
+          <button type="button" className="earnings-lens__retry" onClick={onRetry}>
+            重试
+          </button>
+        </p>
+      ) : null}
+      {!loading && !errorMsg && items.length === 0 ? (
+        <p className="scheduled-tasks__empty">当前没有已启用且将进入 Beat 调度的任务。</p>
+      ) : null}
+      {!loading && !errorMsg && items.length > 0 ? (
+        <div className="scheduled-tasks-beat-modal__table-wrap stock-table-wrapper">
+          <table className="scheduled-tasks-table stock-table">
+            <thead>
+              <tr>
+                <th>Beat 键名</th>
+                <th>任务名称</th>
+                <th>cron</th>
+                <th>Beat 任务</th>
+                <th>实际 Celery 任务</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((row) => (
+                <tr key={row.beatKey}>
+                  <td>
+                    <code className="scheduled-tasks__code">{row.beatKey}</code>
+                  </td>
+                  <td>{row.name}</td>
+                  <td>
+                    <code className="scheduled-tasks__code">{row.cronExpr}</code>
+                  </td>
+                  <td>
+                    <code className="scheduled-tasks__code">{row.beatTask}</code>
+                  </td>
+                  <td>
+                    <code className="scheduled-tasks__code">{row.targetTaskKey}</code>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      <div className="ai-modal__actions">
+        <button type="button" onClick={onClose}>
+          关闭
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function TaskTable({ items, onEdit }) {
   if (items.length === 0) {
     return <p className="scheduled-tasks__empty">暂无定时任务，点击「新增任务」创建。</p>
@@ -183,6 +255,11 @@ export default function ScheduledTasksLayout({ apiBase }) {
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState('')
   const [taskKeyOptions, setTaskKeyOptions] = useState([])
+  const [beatModalOpen, setBeatModalOpen] = useState(false)
+  const [beatItems, setBeatItems] = useState([])
+  const [beatLoading, setBeatLoading] = useState(false)
+  const [beatError, setBeatError] = useState('')
+  const [beatBrokerConfigured, setBeatBrokerConfigured] = useState(false)
 
   const loadList = useCallback(async () => {
     setErrorMsg('')
@@ -306,6 +383,32 @@ export default function ScheduledTasksLayout({ apiBase }) {
       .finally(() => setLoading(false))
   }
 
+  const loadBeatSchedule = useCallback(async () => {
+    setBeatError('')
+    setBeatLoading(true)
+    try {
+      const data = await fetchBeatSchedule(apiBase)
+      setBeatBrokerConfigured(data.brokerConfigured)
+      setBeatItems(data.items)
+    } catch (e) {
+      setBeatError(e instanceof Error ? e.message : '加载 Beat 调度失败')
+      setBeatItems([])
+      setBeatBrokerConfigured(false)
+    } finally {
+      setBeatLoading(false)
+    }
+  }, [apiBase])
+
+  const openBeatSchedule = () => {
+    setBeatModalOpen(true)
+    void loadBeatSchedule()
+  }
+
+  const closeBeatSchedule = () => {
+    setBeatModalOpen(false)
+    setBeatError('')
+  }
+
   return (
     <div className="scheduled-tasks">
       <header className="scheduled-tasks__header">
@@ -318,6 +421,9 @@ export default function ScheduledTasksLayout({ apiBase }) {
       <div className="scheduled-tasks__toolbar">
         <button type="button" className="stock-toolbar-add" onClick={openAdd}>
           新增任务
+        </button>
+        <button type="button" className="scheduled-tasks__query-btn" onClick={openBeatSchedule}>
+          查看 Beat 调度
         </button>
       </div>
 
@@ -344,6 +450,19 @@ export default function ScheduledTasksLayout({ apiBase }) {
             onFieldChange={onFieldChange}
             onSubmit={() => void handleSubmit()}
             onClose={closeEditor}
+          />
+        </div>
+      ) : null}
+
+      {beatModalOpen ? (
+        <div className="ai-modal-mask" role="presentation" onClick={closeBeatSchedule}>
+          <BeatScheduleModal
+            loading={beatLoading}
+            errorMsg={beatError}
+            brokerConfigured={beatBrokerConfigured}
+            items={beatItems}
+            onClose={closeBeatSchedule}
+            onRetry={() => void loadBeatSchedule()}
           />
         </div>
       ) : null}

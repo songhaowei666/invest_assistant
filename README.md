@@ -1,31 +1,35 @@
 # invest_assistant
 
-面向 A 股场景的投资助手项目，包含持仓管理、透视盈余、投资助手对话、投研数问（自然语言转 SQL）等功能模块。
+面向 A 股场景的投资助手项目，包含持仓管理、透视盈余、投资助手对话、投研数问、定时任务（Celery Beat）等功能模块。
 
 ## 功能概览
 
-- 持仓管理：持仓列表查询、批量新增/删除/修改、股票名称联想、按代码查询价格与股息率（数据来自 `stock_basic_info`）
-- 透视盈余：按当前持仓关联估值快照与年报，并提供按市值加权的组合透视指标（独立接口 `GET /earnings-lens`，见 `docs/api/earnings-lens-api.md`）
-- 投资助手：基于会话的流式对话（SSE）；会话列表按创建时间排序；支持修改会话标题、侧栏删除确认（非系统 `confirm`）；助手气泡内 Markdown 压缩多余空行与收紧行距
-- 投研数问：自然语言问题转 SQL，返回查询结果与中文总结，并支持会话管理
-- 前后端分离：后端 FastAPI + SQLAlchemy，前端 React + Vite
+- **持仓管理**：持仓列表查询、批量新增/删除/修改、股票名称联想、按代码查询价格与股息率（数据来自 `stock_basic_info`）
+- **透视盈余**：按当前持仓关联估值快照与年报，并提供按市值加权的组合透视指标（`GET /earnings-lens`，见 `docs/api/earnings-lens-api.md`）
+- **投资助手**：基于会话的流式对话（SSE）；会话列表按创建时间排序；支持修改会话标题、侧栏删除确认；助手气泡内 Markdown 压缩多余空行
+- **投研数问**：自然语言问题转 SQL，返回查询结果与中文总结，并支持会话管理
+- **定时任务**：Web 页面配置 cron、选择 Celery 任务名；Beat 从 PostgreSQL 加载调度，Worker 异步执行（含按持仓批量更新 `stock_basic_info`）
+- **前后端分离**：后端 FastAPI + SQLAlchemy + Celery，前端 React + Vite
 
 ## 目录结构
 
-- `api/`：后端服务代码（控制器、服务、模型、AI 流程、脚本）
-- `web/`：前端页面与交互（持仓数据/透视盈余/投资助手/投研数问）
-- `scripts/`：项目级启动脚本（`start-api.sh`、`start-web.sh`）
-- `docs/`：API 文档、规格文档、页面说明
+| 路径 | 说明 |
+|------|------|
+| `api/` | 后端：控制器、服务、模型、AI、Celery 任务、`core/akshare` 数据更新 |
+| `web/` | 前端：持仓 / 透视盈余 / 投资助手 / 投研数问 / 定时任务 |
+| `scripts/` | 项目级启动脚本（`start-api.sh`、`start-web.sh`） |
+| `docs/` | API 与页面说明文档 |
 
 ## 运行环境
 
 - Python 3.11+（建议 3.12）
 - Node.js 18+（建议 LTS）
-- PostgreSQL（默认配置为 PostgreSQL 连接）
+- PostgreSQL
+- Redis（启用定时任务 / Celery 时需要，可与业务缓存共用实例、不同 DB）
 
 ## 快速启动
 
-### 1) 后端依赖安装（`api/`）
+### 1) 后端依赖（`api/`）
 
 ```bash
 cd api
@@ -34,148 +38,206 @@ source .venv/bin/activate
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
 ```
 
-### 2) 前端依赖安装（`web/`）
+### 2) 前端依赖（`web/`）
 
 ```bash
 cd web
 npm install
 ```
 
-### 3) 启动后端
+### 3) 配置 `api/.env`
 
-在仓库根目录执行：
+复制并填写密钥与数据库；若使用定时任务，需配置 Redis 与 Celery，例如：
 
-```bash
-./scripts/start-api.sh
+```env
+CELERY_BROKER_URL=redis://:密码@localhost:6379/1
+CELERY_BACKEND=redis
+CELERY_LOG_TZ=Asia/Shanghai
+# 可选：额外加载任务模块（tasks.scheduler、tasks.stock 会自动合并）
+CELERY_IMPORTS=tasks.sample
 ```
 
-后端默认地址：`http://127.0.0.1:8000`  
-健康检查：`GET /health`
+### 4) 数据库表（按需执行）
 
-### 3.1) 手动创建 nanobot PG 表（新增）
+**业务表（持仓等）**：API 启动时会 `create_all` 并种子持仓（表为空时）。
 
-`nanobot_main` 的会话、定时任务、记忆存储已迁移到 PostgreSQL。  
-这些新表**不走启动自动建表**，请手动执行：
+**nanobot（投资助手 PG 存储）**：不随启动自动建表，需手动执行：
 
 ```bash
 cd api
 python3 scripts/create_nanobot_tables.py
 ```
 
-脚本会创建（或确认存在）以下 7 张表，并刷新 PostgreSQL `COMMENT ON`；对**已存在**的 `nanobot_session` 表会执行 **`ADD COLUMN IF NOT EXISTS title`**（展示用会话标题），再写入列备注：
+涉及 `nanobot_session`、`nanobot_session_message`、`nanobot_cron_job`、`nanobot_memory_*` 等 7 张表。
 
-- `nanobot_session`（含 `title` 列，旧行可为空）
-- `nanobot_session_message`
-- `nanobot_cron_job`
-- `nanobot_memory_file`
-- `nanobot_memory_md`
-- `nanobot_memory_history`
-- `nanobot_memory_cursor`
+**定时任务配置表**：
 
-### 4) 启动前端
+```bash
+cd api
+python3 scripts/create_scheduled_tasks_tables.py
+```
 
-在仓库根目录执行：
+创建 `scheduled_task`、`scheduled_task_run`。
+
+**股票快照 / 财报表**（透视盈余、AkShare 更新依赖）：
+
+```bash
+cd api
+python3 scripts/create_stock_basic_info_table.py
+python3 scripts/create_stock_financial_report_table.py
+```
+
+### 5) 启动后端
+
+仓库根目录：
+
+```bash
+./scripts/start-api.sh
+```
+
+- 地址：`http://127.0.0.1:8000`
+- 健康检查：`GET /health`
+- 调试：`DEBUG=1 ./scripts/start-api.sh`（debugpy，默认端口 5678）
+
+### 6) 启动前端
 
 ```bash
 ./scripts/start-web.sh
 ```
 
-前端默认地址：`http://localhost:5173`
+- 地址：`http://localhost:5173`
+- 默认 API：`http://localhost:8000/api/v1`
 
-## 环境变量说明（`api/.env`）
+### 7) Celery Worker 与 Beat（定时任务）
 
-后端通过 `api/configs/config.py` 读取配置，核心变量如下：
+在 **`api/`** 目录、已激活虚拟环境且已配置 `CELERY_BROKER_URL`：
 
-- `OPENAI_API_KEY`：必填
-- `DASHSCOPE_API_KEY`：必填
-- `OPENAI_MODEL`：默认 `gpt-4o-mini`
-- `OPENAI_BASE_URL`：默认 `https://api.openai.com/v1`
-- `DASHSCOPE_BASE_URL`：默认 `https://api.dashscope.aliyuncs.com/compatible-mode/v1`
-- `API_PREFIX`：默认 `/api/v1`
-- `DATABASE_URL`：可选，设置后优先使用
-- `DB_TYPE`、`DB_USERNAME`、`DB_PASSWORD`、`DB_HOST`、`DB_PORT`、`DB_DATABASE`：未设置 `DATABASE_URL` 时用于拼接 PostgreSQL 连接串
+```bash
+# 终端 1：消费队列
+celery -A extensions.ext_celery:celery_app worker -l info
 
-说明：当前配置未设置 `DATABASE_URL` 时仅支持 `postgresql` 类型。
+# 终端 2：按 DB 中 cron 调度（仅需一个 Beat 进程）
+celery -A extensions.ext_celery:celery_app beat -l info
+```
 
-## 前端页面说明
+常用排查：
 
-`web` 顶部导航包含 4 个页面：
+```bash
+# 查看 Worker 已注册任务
+celery -A extensions.ext_celery:celery_app inspect registered
 
-- `持仓数据`：对应 `positions` 下列表与增删改等接口
-- `透视盈余`：对应 `GET /earnings-lens`；展示每行快照与年报摘要，以及 `mcWeighted` 市值加权组合指标（缺失市值按 0、无样本时加权为 0）
-- `投资助手`：对应 `/bot/*` 会话与流式聊天接口（详见 `docs/api/bot--api.md`；列表按 `created_at` 倒序；前端列表请求带 Abort，避免并发刷新覆盖新标题）
-- `投研数问`：对应 `/sql-copilot/*` 会话与问答接口
+# 手动触发示例任务
+celery -A extensions.ext_celery:celery_app call tasks.sample.ping
+celery -A extensions.ext_celery:celery_app call tasks.stock.update_position_basic_info
+```
 
-前端默认请求后端地址为：`http://localhost:8000/api/v1`。
+本地调试 Worker 可使用 `--pool=solo`；定时链路中 `run_scheduled_task` 会再投递子任务，solo 单进程已通过 `apply` 同步执行子任务避免死锁。
+
+## 前端页面
+
+顶部导航共 5 项：
+
+| 页面 | 说明 |
+|------|------|
+| 持仓数据 | `positions` 增删改查、联想、价格股息 |
+| 透视盈余 | `GET /earnings-lens` |
+| 投资助手 | `/bot/*` 会话与流式聊天（`docs/api/bot--api.md`） |
+| 投研数问 | `/sql-copilot/*` |
+| 定时任务 | `/scheduled-tasks/*`：配置 cron、`task_key`、查看 Beat 调度与执行历史 |
 
 ## API 入口
 
-后端统一前缀默认：`/api/v1`。主要接口分组：
+统一前缀默认：`/api/v1`。
 
-- `positions`：`GET /positions`、`POST /positions/add`、`POST /positions/delete`、`POST /positions/modify`、`GET /positions/stock-name-suggest`、`GET /positions/price-dividend`
-- `earnings-lens`：`GET /earnings-lens`（独立控制器，详见 `docs/api/earnings-lens-api.md`）
-- `bot`：`/bot/sessions/list`、`/bot/sessions/history`、`/bot/sessions/delete`、`/bot/sessions/title`（修改标题）、`/bot/chat`
-- `sql-copilot`：`/sql-copilot/chat`、`/sql-copilot/query-scope`、`/sql-copilot/sessions/*`
+| 分组 | 主要路径 |
+|------|----------|
+| `positions` | `GET /positions`、`POST /positions/add|delete|modify`、`GET .../stock-name-suggest`、`GET .../price-dividend` |
+| `earnings-lens` | `GET /earnings-lens` |
+| `bot` | `/bot/sessions/*`、`POST /bot/chat` |
+| `sql-copilot` | `/sql-copilot/chat`、`/sql-copilot/sessions/*` |
+| `scheduled-tasks` | `GET /scheduled-tasks`、`POST .../add|modify`、`GET .../task-keys`、`GET .../beat-schedule` |
 
-## Bot 存储说明（重要更新）
+## Celery 定时任务说明
 
-当前 `bot` 对话链路已从 workspace 文件存储切换为 PostgreSQL：
+### 调度链路
 
-- 会话：原 `api/.nanobot/sessions/*.jsonl` → `nanobot_session`（含 **`title`** 展示列 + `metadata_json`）+ `nanobot_session_message`
-- 定时任务：原 `api/.nanobot/cron/jobs.json` → `nanobot_cron_job`
-- 记忆：原 `SOUL.md`/`USER.md`/`memory/MEMORY.md`/`memory/history.jsonl` → `nanobot_memory_*` 系列表
+1. **Beat** 使用 `DatabaseBeatScheduler`（`core/scheduled_celery.py`），从 `scheduled_task` 表读取已启用任务；每次 tick 刷新 DB 配置（改 cron 后无需重启 Beat，最长约 `maxinterval` 默认 5 分钟内生效）。
+2. 到点投递 **`tasks.scheduler.run_scheduled_task`**，参数为 DB 行 `id`。
+3. **Worker** 执行后按行的 **`task_key`** 调用具体业务任务（如更新持仓快照）。
 
-隔离策略：
+### Cron 表达式
 
-- 底层存储按 `user_id` 做隔离
-- 当前 `/bot/*` 入口默认使用 `default_user`（后续可平滑切换到真实登录态用户）
+5 段格式：**分 时 日 月 周**（与 Linux cron 一致），时区为 `CELERY_LOG_TZ`（默认 `Asia/Shanghai`）。
+
+| 示例 | 含义 |
+|------|------|
+| `35 8 * * *` | 每天 08:35 |
+| `*/8 * * * *` | 每 8 分钟 |
+| `* * * * *` | 每分钟（仅建议测试） |
+
+注意：顺序是「分 时」，`20 8` 表示 08:20，不是 20:08。
+
+### 内置业务任务（`api/tasks/`）
+
+| task_key | 说明 |
+|----------|------|
+| `tasks.sample.ping` | 连通性测试 |
+| `tasks.sample.echo` | 回显字符串 |
+| `tasks.stock.update_position_basic_info` | 读取 `positions` 持仓代码，调用 AkShare 更新 `stock_basic_info` |
+| `tasks.scheduler.run_scheduled_task` | Beat 内部入口，勿在页面配置为业务任务 |
+
+新增任务：在 `api/tasks/` 下用 `@shared_task(name="...")` 声明；页面「任务名」下拉通过 `GET /scheduled-tasks/task-keys` 扫描获得。若需 Worker 加载自定义模块，可设置 `CELERY_IMPORTS`（`tasks.scheduler`、`tasks.stock` 已默认合并）。
+
+### 命令行更新单股 / 持仓快照（AkShare）
+
+```bash
+cd api
+# 单股基础快照
+python -m core.akshare.update_stock_tables 600519 --target basic
+# 持仓表内所有代码批量更新（与 Celery 任务逻辑相同）
+python -c "from core.akshare.update_stock_tables import update_position_stocks_basic_info; print(update_position_stocks_basic_info())"
+```
+
+## Bot 存储说明
+
+投资助手已从 workspace 文件迁移到 PostgreSQL：
+
+- 会话：`nanobot_session` + `nanobot_session_message`
+- 定时：`nanobot_cron_job`（与 Celery `scheduled_task` 为两套机制）
+- 记忆：`nanobot_memory_*`
+
+当前 `/bot/*` 默认 `user_id=default_user`。
+
+## 环境变量（`api/.env`）
+
+| 变量 | 说明 |
+|------|------|
+| `OPENAI_API_KEY` / `DASHSCOPE_API_KEY` | LLM 必填 |
+| `OPENAI_MODEL`、`OPENAI_BASE_URL`、`DASHSCOPE_BASE_URL` | 模型与端点 |
+| `API_PREFIX` | 默认 `/api/v1` |
+| `DATABASE_URL` 或 `DB_*` | PostgreSQL |
+| `CELERY_BROKER_URL` | 设置后启用 Celery；未设置则 API 不初始化 broker |
+| `CELERY_RESULT_BACKEND` | 默认同 broker |
+| `CELERY_LOG_TZ` | Beat cron 时区，默认 `Asia/Shanghai` |
+| `CELERY_IMPORTS` | 逗号分隔任务模块，如 `tasks.sample` |
+| `REDIS_*` | 业务 Redis（可选，与 Celery 可同实例不同 DB） |
 
 ## 文档索引
 
-- `docs/api/positions-api.md`：持仓接口文档
-- `docs/api/earnings-lens-api.md`：透视盈余接口文档
-- `docs/api/bot--api.md`：投资助手（Bot）接口文档
-- `docs/api/sql-copilot-api.md`：投研数问接口文档
-- `docs/web/投研数问.md`：投研数问前端页面说明
-- `前端.spec.md`：前端需求说明
-- `后端接口文档.md`：后端接口补充文档
+- `docs/api/positions-api.md` — 持仓
+- `docs/api/earnings-lens-api.md` — 透视盈余
+- `docs/api/bot--api.md` — 投资助手
+- `docs/api/sql-copilot-api.md` — 投研数问
+- `docs/web/投研数问.md` — 投研数问前端
+- `前端.spec.md`、`后端接口文档.md` — 补充说明
 
-## 提交到 GitHub 远程仓库
+## 远程仓库
 
-远程仓库地址：  
 `https://github.com/songhaowei666/invest_assistant.git`
 
-在仓库根目录执行：
-
 ```bash
-cd /home/song/github_clone/invest_assistant
-git status
-git add .
-git commit -m "初始化项目代码"
-```
-
-### 配置远程地址
-
-若本地未配置 `origin`：
-
-```bash
-git remote add origin https://github.com/songhaowei666/invest_assistant.git
-```
-
-若 `origin` 已存在，更新地址：
-
-```bash
-git remote set-url origin https://github.com/songhaowei666/invest_assistant.git
-```
-
-### 首次推送
-
-```bash
-git branch -M main
+git remote add origin https://github.com/songhaowei666/invest_assistant.git   # 首次
 git push -u origin main
 ```
 
-### 常见问题
-
-- 认证失败：请使用 GitHub Token（不是账号密码）
-- 敏感文件（如 `.env`）被暂存：先确认根目录 `.gitignore` 已生效，再重新执行 `git add .`
+请勿提交 `api/.env` 等敏感文件（根目录 `.gitignore` 已忽略）。

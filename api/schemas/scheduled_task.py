@@ -26,6 +26,20 @@ class ScheduledTaskKeysResponse(BaseModel):
     items: list[str]
 
 
+class BeatScheduleItem(BaseModel):
+    beatKey: str
+    taskId: int
+    name: str
+    cronExpr: str
+    beatTask: str
+    targetTaskKey: str
+
+
+class BeatScheduleListResponse(BaseModel):
+    brokerConfigured: bool
+    items: list[BeatScheduleItem]
+
+
 class ScheduledTaskDbRow(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     cron_expr: str = Field(min_length=1, max_length=128)

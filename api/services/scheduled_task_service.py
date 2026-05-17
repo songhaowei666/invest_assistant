@@ -1,10 +1,17 @@
 from fastapi import HTTPException
 
-from core.scheduled_celery import cron_expr_to_crontab, sync_beat_schedule
+from core.scheduled_celery import (
+    cron_expr_to_crontab,
+    get_celery_app_or_none,
+    list_beat_schedule_entries,
+    sync_beat_schedule,
+)
 from models.scheduled_task import ScheduledTask
 from tasks.discovery import list_task_keys_from_tasks_package
 from repositories.scheduled_task_repo import ScheduledTaskRepository
 from schemas.scheduled_task import (
+    BeatScheduleItem,
+    BeatScheduleListResponse,
     ScheduledTaskDbRow,
     ScheduledTaskItem,
     ScheduledTaskListResponse,
@@ -35,6 +42,15 @@ class ScheduledTaskService:
         rows = self.repo.list_tasks_with_latest_run(db)
         items = [self._to_item(row) for row in rows]
         return ScheduledTaskListResponse(items=items)
+
+    def list_beat_schedule(self, db) -> BeatScheduleListResponse:
+        broker_configured = get_celery_app_or_none() is not None
+        raw_items = list_beat_schedule_entries(db)
+        items = [BeatScheduleItem(**row) for row in raw_items]
+        return BeatScheduleListResponse(
+            brokerConfigured=broker_configured,
+            items=items,
+        )
 
     def add(self, db, payload: list[ScheduledTaskDbRow]) -> ScheduledTaskListResponse:
         seen: set[str] = set()

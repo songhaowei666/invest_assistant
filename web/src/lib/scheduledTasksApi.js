@@ -25,6 +25,19 @@ export async function fetchScheduledTaskKeys(apiBase) {
   return Array.isArray(data.items) ? data.items : []
 }
 
+/** 查询当前 Beat 将调度的任务 */
+export async function fetchBeatSchedule(apiBase) {
+  const res = await fetch(`${apiBase}/scheduled-tasks/beat-schedule`)
+  if (!res.ok) {
+    throw new Error(await parseError(res))
+  }
+  const data = await res.json()
+  return {
+    brokerConfigured: Boolean(data.brokerConfigured),
+    items: Array.isArray(data.items) ? data.items : [],
+  }
+}
+
 /** 查询列表 */
 export async function fetchScheduledTasks(apiBase) {
   const res = await fetch(`${apiBase}/scheduled-tasks`)

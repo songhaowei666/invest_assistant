@@ -13,7 +13,11 @@ API_DIR = Path(__file__).resolve().parents[2]
 if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from db import SessionLocal
+from models.position import Position
 from models.stock_basic_info import StockBasicInfo
 from models.stock_financial_report import StockFinancialReport
 
@@ -86,6 +90,51 @@ def update_stock_basic_info(code: str) -> StockBasicInfo:
         db.commit()
         db.refresh(row)
         return row
+
+
+def list_position_stock_codes(db: Session | None = None) -> list[str]:
+    """从持仓表读取不重复的股票代码（6 位）。"""
+    stmt = select(Position.code).order_by(Position.code.asc())
+
+    def _collect(session: Session) -> list[str]:
+        raw_codes = list(session.scalars(stmt).all())
+        seen: set[str] = set()
+        result: list[str] = []
+        for code in raw_codes:
+            normalized = _normalize_stock_code(code)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+        return result
+
+    if db is not None:
+        return _collect(db)
+    with SessionLocal() as session:
+        return _collect(session)
+
+
+def update_position_stocks_basic_info() -> str:
+    """按持仓股票代码批量更新 StockBasicInfo 基础快照。"""
+    codes = list_position_stock_codes()
+    if not codes:
+        return "skip: 持仓表无股票代码"
+
+    ok: list[str] = []
+    failed: list[tuple[str, str]] = []
+    for code in codes:
+        try:
+            update_stock_basic_info(code)
+            ok.append(code)
+        except Exception as exc:
+            failed.append((code, repr(exc)))
+
+    lines = [f"total={len(codes)} success={len(ok)} failed={len(failed)}"]
+    if ok:
+        lines.append("ok: " + ",".join(ok))
+    for code, err in failed:
+        lines.append(f"fail {code}: {err}")
+    return "\n".join(lines)
 
 
 def update_stock_financial_report(code: str) -> int:
