@@ -53,7 +53,7 @@ def _parse_imports(raw: str) -> list[str]:
 def _merge_celery_imports(raw: str) -> list[str]:
     """合并用户配置与内置 tasks.scheduler（定时任务 Beat 入口）。"""
     modules = _parse_imports(raw)
-    for required in ("tasks.scheduler", "tasks.stock"):
+    for required in ("tasks.scheduler", "tasks.stock", "tasks.nanobot_dream"):
         if required not in modules:
             modules.append(required)
     return modules

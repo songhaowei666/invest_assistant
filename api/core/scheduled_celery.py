@@ -199,6 +199,7 @@ class DatabaseBeatScheduler(Scheduler):
         self.merge_inplace(incoming)
         self.app.conf.beat_schedule = dict(self.schedule)
 
-    def tick(self, event_t=None, min=min, **kwargs):  # type: ignore[no-untyped-def]
+    def tick(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        """每次 tick 前刷新 DB 调度表；勿改写 event_t 默认值（须为 celery.beat.event_t）。"""
         self._merge_database_schedule()
-        return super().tick(event_t=event_t, min=min, **kwargs)
+        return super().tick(*args, **kwargs)
