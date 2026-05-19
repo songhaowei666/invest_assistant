@@ -6,6 +6,7 @@ from controllers.router import api_router
 from db import SessionLocal, engine
 from extensions import init_extensions
 from core.scheduled_celery import get_celery_app_or_none, sync_beat_schedule
+from models.account import Account, AccountRefreshToken  # noqa: F401 注册元数据
 from models.base import Base
 from models.position import Position
 from repositories.position_repo import PositionRepository

@@ -9,6 +9,7 @@ TEST_DB_PATH = API_DIR / "tests" / "test_positions_list.db"
 
 sys.path.insert(0, str(API_DIR))
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH}"
+os.environ["JWT_SECRET_KEY"] = "test-jwt-secret-key-for-positions-api-tests-only-32+chars"
 
 from fastapi.testclient import TestClient  # noqa: E402
 

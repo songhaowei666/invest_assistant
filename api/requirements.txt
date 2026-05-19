@@ -1,8 +1,10 @@
 akshare
 fastapi
 uvicorn
+PyJWT
 sqlalchemy
 pydantic-settings
+email-validator
 langchain
 langgraph
 langchain-openai

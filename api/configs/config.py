@@ -1,7 +1,7 @@
 from pathlib import Path
 from urllib.parse import quote_plus
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # api 目录，用于固定加载 api/.env（与工作目录无关）
@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     MEM0_API_KEY: str = ""
     MEM0_BASE_URL: str = ""
     PROPOSAL_EXPIRE_MINUTES: int = 30
+
+    # JWT 与 access/refresh 过期（密钥须在 .env 中配置，勿提交仓库）
+    JWT_SECRET_KEY: str = Field(min_length=1, description="HS256 签名密钥")
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 14
 
     # Celery（未设置 CELERY_BROKER_URL 时不初始化，避免本地无 Redis 时报错）
     CELERY_BROKER_URL: str | None = None

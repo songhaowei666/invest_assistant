@@ -1,3 +1,4 @@
+from models.account import Account, AccountRefreshToken, AccountStatus
 from models.audit import AuditLog
 from models.position import Position
 from models.proposal import AiModifyProposal
@@ -9,6 +10,9 @@ from models.sql_copilot_message import SqlCopilotMessage
 from models.sql_copilot_session import SqlCopilotSession
 
 __all__ = [
+    "Account",
+    "AccountRefreshToken",
+    "AccountStatus",
     "Position",
     "AiModifyProposal",
     "AuditLog",
