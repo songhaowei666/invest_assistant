@@ -1,15 +1,37 @@
-akshare
+# Web 与配置
 fastapi
 uvicorn
-PyJWT
-sqlalchemy
 pydantic-settings
 email-validator
-langchain
-langgraph
+
+# 数据库（SQLAlchemy 使用 postgresql:// 时需本机驱动）
+sqlalchemy
+psycopg2-binary
+
+# 认证
+PyJWT
+
+# 行情与数据处理
+akshare
+pandas
+
+# AI：投研数问 / 图编排 / 向量与记忆
+langchain-core
 langchain-openai
+langgraph
 openai
 vanna
 chromadb
 mem0ai
+
+# 投资助手（nanobot）与对外 HTTP
+loguru
+httpx
+tiktoken
+PyYAML
+
+# 异步任务（含 Redis broker）
 celery[redis]
+
+# 本地调试：DEBUG=1 时 scripts/start-api.sh 使用 debugpy
+debugpy

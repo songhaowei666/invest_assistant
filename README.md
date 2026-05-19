@@ -1,15 +1,16 @@
 # invest_assistant
 
-面向 A 股场景的投资助手项目，包含持仓管理、透视盈余、投资助手对话、投研数问、定时任务（Celery Beat）等功能模块。
+面向 A 股场景的投资助手项目，包含持仓管理、透视盈余、投资助手对话、投研数问、定时任务（Celery Beat）等功能模块；**账户认证**（JWT access + PostgreSQL refresh、`access_token` 版本作废旧令牌）与持仓等受保护接口已接入。
 
 ## 功能概览
 
-- **持仓管理**：持仓列表查询、批量新增/删除/修改、股票名称联想、按代码查询价格与股息率（数据来自 `stock_basic_info`）
+- **账户认证**：注册 / 登录 / 刷新 / 登出 / 当前用户（`POST|GET /auth/*`）；JWT 内含 `ver` 与库表 `access_token_version` 对齐，**刷新或登出后旧 access 作废**（详见 `docs/api/auth-api.md`）
+- **持仓管理**：持仓列表查询、批量新增/删除/修改、股票名称联想、按代码查询价格与股息率（数据来自 `stock_basic_info`）；**接口需登录**（Bearer）
 - **透视盈余**：按当前持仓关联估值快照与年报，并提供按市值加权的组合透视指标（`GET /earnings-lens`，见 `docs/api/earnings-lens-api.md`）
 - **投资助手**：基于会话的流式对话（SSE）；会话列表按创建时间排序；支持修改会话标题、侧栏删除确认；助手气泡内 Markdown 压缩多余空行
 - **投研数问**：自然语言问题转 SQL，返回查询结果与中文总结，并支持会话管理
 - **定时任务**：Web 页面配置 cron、选择 Celery 任务名；Beat 从 PostgreSQL 加载调度，Worker 异步执行（含按持仓批量更新 `stock_basic_info`）
-- **前后端分离**：后端 FastAPI + SQLAlchemy + Celery，前端 React + Vite
+- **前后端分离**：后端 FastAPI + SQLAlchemy + Celery，前端 React + Vite；前端在受保护接口 **401** 时 **全屏展示登录**（非顶栏「账户」入口）
 
 ## 目录结构
 
@@ -18,7 +19,7 @@
 | `api/` | 后端：控制器、服务、模型、AI、Celery 任务、`core/akshare` 数据更新 |
 | `web/` | 前端：持仓 / 透视盈余 / 投资助手 / 投研数问 / 定时任务 |
 | `scripts/` | 项目级启动脚本（`start-api.sh`、`start-web.sh`） |
-| `docs/` | API 与页面说明文档 |
+| `docs/` | API 与页面说明文档（含 `docs/api/auth-api.md`） |
 
 ## 运行环境
 
@@ -47,7 +48,7 @@ npm install
 
 ### 3) 配置 `api/.env`
 
-复制并填写密钥与数据库；若使用定时任务，需配置 Redis 与 Celery，例如：
+复制并填写密钥与数据库；**认证**须配置 `JWT_SECRET_KEY`（见下表）。若使用定时任务，需配置 Redis 与 Celery，例如：
 
 ```env
 CELERY_BROKER_URL=redis://:密码@localhost:6379/1
@@ -60,6 +61,17 @@ CELERY_IMPORTS=tasks.sample
 ### 4) 数据库表（按需执行）
 
 **业务表（持仓等）**：API 启动时会 `create_all` 并种子持仓（表为空时）。
+
+**账户与 refresh 表（登录注册）**：不依赖启动时自动补全列，**PostgreSQL 上请执行一次**（可重复执行，含 `accounts.access_token_version` 升级）：
+
+```bash
+cd api
+python3 scripts/create_account_tables.py
+```
+
+若升级代码后出现 `column accounts.access_token_version does not exist`，重新执行上述脚本即可。
+
+**联调命令**：`api/scripts/test_auth_flow_curl.txt`（curl 全流程，响应 JSON 默认写入 `api/tmp/`）。
 
 **nanobot（投资助手 PG 存储）**：不随启动自动建表，需手动执行：
 
@@ -107,6 +119,7 @@ python3 scripts/create_stock_financial_report_table.py
 
 - 地址：`http://localhost:5173`
 - 默认 API：`http://localhost:8000/api/v1`
+- 后端 CORS 当前允许来源：`http://localhost:5173`、`http://127.0.0.1:5173`（见 `api/main.py`）
 
 ### 7) Celery Worker 与 Beat（定时任务）
 
@@ -135,11 +148,11 @@ celery -A extensions.ext_celery:celery_app call tasks.stock.update_position_basi
 
 ## 前端页面
 
-顶部导航共 5 项：
+顶部导航共 **5** 项（无单独「账户」入口；**无权限时自动全屏登录**）：
 
 | 页面 | 说明 |
 |------|------|
-| 持仓数据 | `positions` 增删改查、联想、价格股息 |
+| 持仓数据 | `positions` 增删改查、联想、价格股息（**需 Bearer**） |
 | 透视盈余 | `GET /earnings-lens` |
 | 投资助手 | `/bot/*` 会话与流式聊天（`docs/api/bot--api.md`） |
 | 投研数问 | `/sql-copilot/*` |
@@ -151,7 +164,8 @@ celery -A extensions.ext_celery:celery_app call tasks.stock.update_position_basi
 
 | 分组 | 主要路径 |
 |------|----------|
-| `positions` | `GET /positions`、`POST /positions/add|delete|modify`、`GET .../stock-name-suggest`、`GET .../price-dividend` |
+| `auth` | `POST /auth/register`、`/auth/login`、`/auth/refresh`、`/auth/logout`、`GET /auth/me`（见 `docs/api/auth-api.md`） |
+| `positions` | `GET /positions`、`POST /positions/add|delete|modify`、`GET .../stock-name-suggest`、`GET .../price-dividend`（**整组需登录**） |
 | `earnings-lens` | `GET /earnings-lens` |
 | `bot` | `/bot/sessions/*`、`POST /bot/chat` |
 | `sql-copilot` | `/sql-copilot/chat`、`/sql-copilot/sessions/*` |
@@ -213,6 +227,10 @@ python -c "from core.akshare.update_stock_tables import update_position_stocks_b
 | 变量 | 说明 |
 |------|------|
 | `OPENAI_API_KEY` / `DASHSCOPE_API_KEY` | LLM 必填 |
+| `JWT_SECRET_KEY` | **认证必填**，HS256 签名密钥（勿提交仓库） |
+| `JWT_ALGORITHM` | 默认 `HS256` |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | access JWT 过期分钟数，默认 `60` |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | refresh 存储有效天数，默认 `14` |
 | `OPENAI_MODEL`、`OPENAI_BASE_URL`、`DASHSCOPE_BASE_URL` | 模型与端点 |
 | `API_PREFIX` | 默认 `/api/v1` |
 | `DATABASE_URL` 或 `DB_*` | PostgreSQL |
@@ -224,7 +242,8 @@ python -c "from core.akshare.update_stock_tables import update_position_stocks_b
 
 ## 文档索引
 
-- `docs/api/positions-api.md` — 持仓
+- `docs/api/auth-api.md` — 认证（注册 / 登录 / 令牌 / 运维与升级说明）
+- `docs/api/positions-api.md` — 持仓（含鉴权说明）
 - `docs/api/earnings-lens-api.md` — 透视盈余
 - `docs/api/bot--api.md` — 投资助手
 - `docs/api/sql-copilot-api.md` — 投研数问
