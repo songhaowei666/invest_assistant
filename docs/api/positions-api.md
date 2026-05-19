@@ -2,6 +2,8 @@
 
 本文档依据 `api/controllers/positions.py` 及 `api/schemas/position.py` 整理。全局路由前缀来自配置项 `API_PREFIX`，默认值为 **`/api/v1`**（见 `api/configs/config.py`）。下列 Path 均为该前缀之后的相对路径。
 
+**认证**：本模块全部接口在 `api/controllers/router.py` 中已挂载 `Depends(get_current_account_id)`，须在请求头携带 `Authorization: Bearer <access_token>`，否则返回 `401`。签发与刷新令牌见 [`auth-api.md`](./auth-api.md)。
+
 **相关只读接口**：按当前持仓聚合「透视盈余」（快照、年报、市值加权组合指标）见独立模块 [`earnings-lens-api.md`](./earnings-lens-api.md)（`GET /api/v1/earnings-lens`），不在本文档 Path 下。
 
 基准示例：`http://localhost:8000` + Path。

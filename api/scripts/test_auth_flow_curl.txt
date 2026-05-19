@@ -5,7 +5,8 @@
 #   1. 已在 api 目录启动服务：uvicorn main:app --host 0.0.0.0 --port 8000
 #   2. .env 已配置 JWT_SECRET_KEY；数据库已存在 accounts / account_refresh_tokens 表
 #      （PostgreSQL：python3 scripts/create_account_tables.py）
-#   3. 在 bash 中执行：先 export BASE=http://127.0.0.1:8000
+#   3. 在 bash 中：先 cd 到本仓库的 api 目录，再 export BASE=http://127.0.0.1:8000
+#      临时 JSON 写入 api/tmp/（相对路径 tmp/）；首次请先执行：mkdir -p tmp
 #      注册接口若返回 409，请修改下面 JSON 中的 email 为未占用邮箱后再执行。
 # =============================================================================
 
@@ -15,14 +16,14 @@
 curl -sS "${BASE}/health"
 
 # -----------------------------------------------------------------------------
-# 测试 1：注册新用户，响应体写入 /tmp/invest_auth_register.json，便于后续解析令牌
+# 测试 1：注册新用户，响应体写入 api/tmp/invest_auth_register.json，便于后续解析令牌
 # -----------------------------------------------------------------------------
-curl -sS -X POST "${BASE}/api/v1/auth/register" -H "Content-Type: application/json" -d '{"email":"curl_test_user@example.com","password":"TestPass123","name":"curl测试"}' -o /tmp/invest_auth_register.json -w "\nHTTP %{http_code}\n"
+curl -sS -X POST "${BASE}/api/v1/auth/register" -H "Content-Type: application/json" -d '{"email":"curl_test_user@example.com","password":"TestPass123","name":"curl测试"}' api/tmp/invest_auth_register.json -w "\nHTTP %{http_code}\n"
 
 # -----------------------------------------------------------------------------
 # 测试 2：从注册响应 JSON 中提取 access_token、refresh_token 到环境变量（需本机已安装 jq）
 # -----------------------------------------------------------------------------
-export ACCESS_TOKEN=$(jq -r .access_token /tmp/invest_auth_register.json) REFRESH_TOKEN=$(jq -r .refresh_token /tmp/invest_auth_register.json) && test -n "$ACCESS_TOKEN" && echo "令牌已写入环境变量"
+export ACCESS_TOKEN=$(jq -r .access_token tmp/invest_auth_register.json) REFRESH_TOKEN=$(jq -r .refresh_token tmp/invest_auth_register.json) && test -n "$ACCESS_TOKEN" && echo "令牌已写入环境变量"
 
 # -----------------------------------------------------------------------------
 # 测试 3：携带 access_token 调用「当前用户」，验证 JWT 与依赖链
@@ -32,22 +33,22 @@ curl -sS "${BASE}/api/v1/auth/me" -H "Authorization: Bearer ${ACCESS_TOKEN}" -H 
 # -----------------------------------------------------------------------------
 # 测试 4：邮箱密码登录（与测试 1 同一邮箱密码时应返回 200 及新令牌对）
 # -----------------------------------------------------------------------------
-curl -sS -X POST "${BASE}/api/v1/auth/login" -H "Content-Type: application/json" -d '{"email":"curl_test_user@example.com","password":"TestPass123"}' -o /tmp/invest_auth_login.json -w "\nHTTP %{http_code}\n"
+curl -sS -X POST "${BASE}/api/v1/auth/login" -H "Content-Type: application/json" -d '{"email":"curl_test_user@example.com","password":"TestPass123"}' -o tmp/invest_auth_login.json -w "\nHTTP %{http_code}\n"
 
 # -----------------------------------------------------------------------------
 # 测试 5：用登录响应更新环境变量中的令牌（后续刷新/登出使用本轮 refresh）
 # -----------------------------------------------------------------------------
-export ACCESS_TOKEN=$(jq -r .access_token /tmp/invest_auth_login.json) REFRESH_TOKEN=$(jq -r .refresh_token /tmp/invest_auth_login.json) && test -n "$ACCESS_TOKEN" && echo "已切换为登录接口签发的令牌"
+export ACCESS_TOKEN=$(jq -r .access_token tmp/invest_auth_login.json) REFRESH_TOKEN=$(jq -r .refresh_token tmp/invest_auth_login.json) && test -n "$ACCESS_TOKEN" && echo "已切换为登录接口签发的令牌"
 
 # -----------------------------------------------------------------------------
 # 测试 6：使用 refresh_token 换取新的 access + refresh（旋转存储）
 # -----------------------------------------------------------------------------
-curl -sS -X POST "${BASE}/api/v1/auth/refresh" -H "Content-Type: application/json" -d "{\"refresh_token\":\"${REFRESH_TOKEN}\"}" -o /tmp/invest_auth_refresh.json -w "\nHTTP %{http_code}\n"
+curl -sS -X POST "${BASE}/api/v1/auth/refresh" -H "Content-Type: application/json" -d "{\"refresh_token\":\"${REFRESH_TOKEN}\"}" -o tmp/invest_auth_refresh.json -w "\nHTTP %{http_code}\n"
 
 # -----------------------------------------------------------------------------
 # 测试 7：将令牌更新为刷新后的新值（旧 refresh 已被撤销，必须用新 refresh 再登出）
 # -----------------------------------------------------------------------------
-export ACCESS_TOKEN=$(jq -r .access_token /tmp/invest_auth_refresh.json) REFRESH_TOKEN=$(jq -r .refresh_token /tmp/invest_auth_refresh.json) && test -n "$ACCESS_TOKEN" && echo "已切换为刷新后的令牌"
+export ACCESS_TOKEN=$(jq -r .access_token tmp/invest_auth_refresh.json) REFRESH_TOKEN=$(jq -r .refresh_token tmp/invest_auth_refresh.json) && test -n "$ACCESS_TOKEN" && echo "已切换为刷新后的令牌"
 
 # -----------------------------------------------------------------------------
 # 测试 8：登出，撤销当前 refresh_token（成功应为 HTTP 204，无响应体）
@@ -60,11 +61,11 @@ curl -sS -X POST "${BASE}/api/v1/auth/logout" -H "Content-Type: application/json
 curl -sS -X POST "${BASE}/api/v1/auth/refresh" -H "Content-Type: application/json" -d "{\"refresh_token\":\"${REFRESH_TOKEN}\"}" -w "\nHTTP %{http_code}\n"
 
 # -----------------------------------------------------------------------------
-# 测试 10：access_token 仍可能未过期，/auth/me 仍可能 200；若需验证 access 失效须等过期或换无效 token
+# 测试 10：登出后旧 access_token 应失效，/auth/me 预期 401（与测试 7 保存的 Bearer 对比）
 # -----------------------------------------------------------------------------
 curl -sS "${BASE}/api/v1/auth/me" -H "Authorization: Bearer ${ACCESS_TOKEN}" -H "Accept: application/json" -w "\nHTTP %{http_code}\n"
 
 # =============================================================================
-# 无 jq 时：手动从 /tmp/invest_auth_register.json 复制 access_token、refresh_token，
+# 无 jq 时：手动从 api/tmp/invest_auth_register.json 复制 access_token、refresh_token，
 # 再执行 export ACCESS_TOKEN='...' 与 export REFRESH_TOKEN='...' 后继续测试 3 及以后。
 # =============================================================================

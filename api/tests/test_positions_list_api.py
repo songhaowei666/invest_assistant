@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 
@@ -13,9 +14,20 @@ os.environ["JWT_SECRET_KEY"] = "test-jwt-secret-key-for-positions-api-tests-only
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from core import user_context  # noqa: E402
 from db import engine  # noqa: E402
+from deps.auth import get_current_account_id  # noqa: E402
 from main import app, seed_positions  # noqa: E402
 from models.base import Base  # noqa: E402
+
+
+async def _override_current_account_id() -> AsyncGenerator[str, None]:
+    """单测绕过 JWT，固定绑定 user_id。"""
+    reset = user_context.set_user_id("default_user")
+    try:
+        yield "default_user"
+    finally:
+        user_context.current_user_id.reset(reset)
 
 
 class PositionsListApiTestCase(unittest.TestCase):
@@ -23,10 +35,12 @@ class PositionsListApiTestCase(unittest.TestCase):
     def setUpClass(cls) -> None:
         if TEST_DB_PATH.exists():
             TEST_DB_PATH.unlink()
+        app.dependency_overrides[get_current_account_id] = _override_current_account_id
         cls.client = TestClient(app)
 
     @classmethod
     def tearDownClass(cls) -> None:
+        app.dependency_overrides.pop(get_current_account_id, None)
         cls.client.close()
         if TEST_DB_PATH.exists():
             TEST_DB_PATH.unlink()

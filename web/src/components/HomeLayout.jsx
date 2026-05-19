@@ -1,20 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import EarningsLensLayout from './EarningsLensLayout'
 import InvestAssistantLayout from './InvestAssistantLayout'
+import LoginLayout from './LoginLayout'
 import ResearchQaLayout from './ResearchQaLayout'
 import ScheduledTasksLayout from './ScheduledTasksLayout'
 import StockList from './StockList'
+import { fetchWithBearer } from '../lib/authFetch'
+import { getAccessToken } from '../lib/authStorage'
 
 const API_BASE = 'http://localhost:8000/api/v1'
-
-/** 请求持仓列表 JSON */
-async function fetchPositionsJson() {
-  const response = await fetch(`${API_BASE}/positions`)
-  if (!response.ok) {
-    throw new Error(`请求失败: ${response.status}`)
-  }
-  return response.json()
-}
 
 /** 从接口数据解析 items 数组 */
 function itemsFromResponse(data) {
@@ -27,6 +21,34 @@ function HomeLayout() {
   const [activePage, setActivePage] = useState('stocks')
   const [isLoading, setIsLoading] = useState(true)
   const [errorMsg, setErrorMsg] = useState('')
+  const [accessToken, setAccessTokenState] = useState(() => getAccessToken())
+  /** 接口 401 且 refresh 无效时全屏展示登录，不作为顶部导航 */
+  const [authGateOpen, setAuthGateOpen] = useState(false)
+  /** 用户主动关闭登录层且仍无 token 时，不再自动请求持仓，避免 401 与弹层死循环 */
+  const [skipPositionsAuthProbe, setSkipPositionsAuthProbe] = useState(false)
+
+  const openAuthGate = useCallback(() => {
+    setAuthGateOpen(true)
+    setSkipPositionsAuthProbe(false)
+    setErrorMsg('')
+  }, [])
+
+  const closeAuthGate = useCallback(() => {
+    setAuthGateOpen(false)
+    if (!getAccessToken()) {
+      setSkipPositionsAuthProbe(true)
+    }
+  }, [])
+
+  const syncAccessFromStorage = useCallback(() => {
+    setAccessTokenState(getAccessToken())
+  }, [])
+
+  const handleAuthSuccess = useCallback(() => {
+    setAuthGateOpen(false)
+    setSkipPositionsAuthProbe(false)
+    setAccessTokenState(getAccessToken())
+  }, [])
 
   const applyItems = useCallback((items) => {
     setStocks(items)
@@ -38,6 +60,17 @@ function HomeLayout() {
     })
   }, [])
 
+  const fetchPositionsJson = useCallback(async () => {
+    const response = await fetchWithBearer(API_BASE, '/positions', { method: 'GET' }, openAuthGate)
+    if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error('需要登录后访问持仓接口')
+      }
+      throw new Error(`请求失败: ${response.status}`)
+    }
+    return response.json()
+  }, [openAuthGate])
+
   /** 写操作成功后静默刷新列表 */
   const onStocksUpdated = useCallback(async () => {
     setErrorMsg('')
@@ -47,9 +80,19 @@ function HomeLayout() {
     } catch (error) {
       setErrorMsg(error instanceof Error ? error.message : '请求持仓列表失败')
     }
-  }, [applyItems])
+  }, [applyItems, fetchPositionsJson])
 
   useEffect(() => {
+    if (authGateOpen) {
+      return undefined
+    }
+    if (skipPositionsAuthProbe && !getAccessToken()) {
+      const timer = window.setTimeout(() => {
+        setIsLoading(false)
+        setErrorMsg('未登录：持仓接口需要鉴权。可刷新页面后再次触发登录，或先在下方操作中完成登录。')
+      }, 0)
+      return () => window.clearTimeout(timer)
+    }
     let cancelled = false
 
     const run = async () => {
@@ -74,7 +117,23 @@ function HomeLayout() {
     return () => {
       cancelled = true
     }
-  }, [applyItems])
+  }, [applyItems, authGateOpen, accessToken, fetchPositionsJson, skipPositionsAuthProbe])
+
+  if (authGateOpen) {
+    return (
+      <div className="page-shell">
+        <div className="auth-gate">
+          <LoginLayout
+            apiBase={API_BASE}
+            onAuthSuccess={handleAuthSuccess}
+            onCancel={closeAuthGate}
+            onTokensCleared={syncAccessFromStorage}
+            intro="访问受保护接口需要登录。接口约定见仓库 docs/api/auth-api.md。"
+          />
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="page-shell">
@@ -130,6 +189,7 @@ function HomeLayout() {
               onSelectStock={setSelectedStockId}
               apiBase={API_BASE}
               onStocksUpdated={onStocksUpdated}
+              onUnauthorized={openAuthGate}
             />
           </>
         ) : null}

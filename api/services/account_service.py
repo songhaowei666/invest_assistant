@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import jwt
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -61,7 +61,11 @@ class AccountService:
     @staticmethod
     def get_account_jwt_token(*, account: Account) -> str:
         expire = naive_utc_now() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-        payload: dict[str, Any] = {"sub": account.id, "exp": expire}
+        payload: dict[str, Any] = {
+            "sub": account.id,
+            "exp": expire,
+            "ver": int(account.access_token_version),
+        }
         return jwt.encode(
             payload,
             settings.JWT_SECRET_KEY,
@@ -69,8 +73,8 @@ class AccountService:
         )
 
     @staticmethod
-    def decode_access_token(token: str) -> str:
-        """解析 access JWT，返回 ``sub``（account id）。校验失败抛 ``jwt.InvalidTokenError``。"""
+    def decode_access_token(token: str) -> tuple[str, int]:
+        """解析 access JWT，返回 ``(account_id, ver)``。缺少或非法 ``ver`` 时抛 ``jwt.InvalidTokenError``。"""
         payload = jwt.decode(
             token,
             settings.JWT_SECRET_KEY,
@@ -78,8 +82,11 @@ class AccountService:
         )
         sub = payload.get("sub")
         if not isinstance(sub, str) or not sub:
-            raise InvalidTokenError("missing sub")
-        return sub
+            raise jwt.InvalidTokenError("missing sub")
+        ver = payload.get("ver")
+        if not isinstance(ver, int) or isinstance(ver, bool):
+            raise jwt.InvalidTokenError("missing or invalid ver")
+        return sub, ver
 
     @staticmethod
     def create_account(
@@ -198,7 +205,10 @@ class AccountService:
             raise AccountRefreshTokenError("账户不可用。")
 
         db.delete(row)
+        account.access_token_version = int(account.access_token_version) + 1
+        db.add(account)
         db.commit()
+        db.refresh(account)
 
         access_token = AccountService.get_account_jwt_token(account=account)
         refresh_plain = AccountService._generate_refresh_token_plain()
@@ -207,9 +217,16 @@ class AccountService:
 
     @staticmethod
     def logout(db: Session, refresh_token: str) -> None:
-        """撤销指定 refresh（哈希命中则删除）。"""
+        """撤销指定 refresh，并递增 access 版本使当前及旧 access JWT 失效。"""
         th = _hash_refresh_token(refresh_token.strip())
-        db.execute(delete(AccountRefreshToken).where(AccountRefreshToken.token_hash == th))
+        row = db.scalar(select(AccountRefreshToken).where(AccountRefreshToken.token_hash == th).limit(1))
+        if row is None:
+            return
+        account = db.get(Account, row.account_id)
+        db.delete(row)
+        if account is not None:
+            account.access_token_version = int(account.access_token_version) + 1
+            db.add(account)
         db.commit()
 
     @staticmethod

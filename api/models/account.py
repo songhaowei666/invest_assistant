@@ -74,6 +74,14 @@ class Account(Base):
         onupdate=func.now(),
         comment="更新时间",
     )
+    # 刷新 / 登出时递增；JWT 内携带 ver，须与库中一致才有效，用于作废旧 access
+    access_token_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default="0",
+        default=0,
+        comment="access 令牌版本，刷新或登出后递增",
+    )
 
     refresh_tokens: Mapped[list["AccountRefreshToken"]] = relationship(
         "AccountRefreshToken",

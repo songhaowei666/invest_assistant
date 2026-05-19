@@ -27,13 +27,15 @@ async def get_current_account_id(
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "未登录或令牌缺失")
     try:
-        account_id = AccountService.decode_access_token(credentials.credentials)
+        account_id, token_ver = AccountService.decode_access_token(credentials.credentials)
     except jwt.PyJWTError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "令牌无效或已过期") from None
 
     account = AccountService.get_account_by_id(db, account_id)
     if account is None or account.status == AccountStatus.BANNED.value:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "账户不可用")
+    if int(account.access_token_version) != token_ver:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "令牌已失效，请使用新 access 或重新登录")
 
     reset_token = user_context.set_user_id(account.id)
     try:
@@ -50,13 +52,15 @@ async def get_current_account(
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "未登录或令牌缺失")
     try:
-        account_id = AccountService.decode_access_token(credentials.credentials)
+        account_id, token_ver = AccountService.decode_access_token(credentials.credentials)
     except jwt.PyJWTError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "令牌无效或已过期") from None
 
     account = AccountService.get_account_by_id(db, account_id)
     if account is None or account.status == AccountStatus.BANNED.value:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "账户不可用")
+    if int(account.access_token_version) != token_ver:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "令牌已失效，请使用新 access 或重新登录")
 
     reset_token = user_context.set_user_id(account.id)
     try:

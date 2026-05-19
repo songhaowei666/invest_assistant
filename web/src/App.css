@@ -71,6 +71,172 @@
   overflow: hidden;
 }
 
+.home-layout--account {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 24px 32px;
+  box-sizing: border-box;
+}
+
+/* 无权限时全屏登录层 */
+.auth-gate {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 28px 20px 40px;
+  box-sizing: border-box;
+  background: #eef2f9;
+}
+
+/* 账户登录 / 注册 */
+.login-layout {
+  max-width: 420px;
+  margin: 0 auto;
+}
+
+.login-layout__header {
+  margin-bottom: 20px;
+}
+
+.login-layout__title {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 600;
+  color: #1a2b4d;
+}
+
+.login-layout__hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #5a6b86;
+}
+
+.login-layout__hint code {
+  font-size: 12px;
+  background: #f0f4fb;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.login-layout__hint--secondary {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #6c7d9e;
+}
+
+.login-layout__toolbar {
+  width: 100%;
+  max-width: 420px;
+  margin-bottom: 12px;
+}
+
+.login-layout__linkish {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 13px;
+  color: #3c7af8;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.login-layout__tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.login-layout__tab {
+  flex: 1;
+  height: 40px;
+  border-radius: 8px;
+  border: 1px solid #d9e1ef;
+  background: #f7f9fd;
+  color: #31415f;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.login-layout__tab--active {
+  border-color: #3c7af8;
+  color: #1a4db3;
+  background: #edf3ff;
+}
+
+.login-layout__form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.login-layout__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #34435f;
+}
+
+.login-layout__field input {
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid #d8dfeb;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.login-layout__submit {
+  margin-top: 6px;
+  height: 42px;
+  border: none;
+  border-radius: 8px;
+  background: #3c7af8;
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.login-layout__submit:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.login-layout__actions {
+  margin-top: 16px;
+}
+
+.login-layout__secondary {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid #d9e1ef;
+  background: #ffffff;
+  color: #31415f;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.login-layout__msg {
+  margin: 14px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.login-layout__msg--ok {
+  color: #1a6b3c;
+}
+
+.login-layout__msg--err {
+  color: #be2d2d;
+}
+
 /* 定时任务页 */
 .scheduled-tasks {
   flex: 1;

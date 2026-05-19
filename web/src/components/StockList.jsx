@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { fetchWithBearer } from '../lib/authFetch'
 
 /** 编辑/新增图标（铅笔） */
 function IconEdit() {
@@ -76,7 +77,7 @@ function computeDerivedByPriceSharesDividend(priceRaw, sharesRaw, dividendYieldR
   }
 }
 
-function StockList({ stocks, selectedStockId, onSelectStock, apiBase, onStocksUpdated }) {
+function StockList({ stocks, selectedStockId, onSelectStock, apiBase, onStocksUpdated, onUnauthorized = () => {} }) {
   const [editorOpen, setEditorOpen] = useState(false)
   const [editorMode, setEditorMode] = useState('add')
   const [form, setForm] = useState(emptyForm)
@@ -140,7 +141,12 @@ function StockList({ stocks, selectedStockId, onSelectStock, apiBase, onStocksUp
     setPriceDividendLoading(true)
     try {
       const params = new URLSearchParams({ code })
-      const response = await fetch(`${apiBase}/positions/price-dividend?${params.toString()}`)
+      const response = await fetchWithBearer(
+        apiBase,
+        `/positions/price-dividend?${params.toString()}`,
+        { method: 'GET' },
+        onUnauthorized,
+      )
       if (!response.ok) {
         throw new Error(`请求失败: ${response.status}`)
       }
@@ -177,7 +183,12 @@ function StockList({ stocks, selectedStockId, onSelectStock, apiBase, onStocksUp
       setNameSuggestError('')
       try {
         const params = new URLSearchParams({ keyword, limit: '10' })
-        const response = await fetch(`${apiBase}/positions/stock-name-suggest?${params.toString()}`)
+        const response = await fetchWithBearer(
+          apiBase,
+          `/positions/stock-name-suggest?${params.toString()}`,
+          { method: 'GET' },
+          onUnauthorized,
+        )
         if (!response.ok) {
           throw new Error(`请求失败: ${response.status}`)
         }
@@ -200,17 +211,20 @@ function StockList({ stocks, selectedStockId, onSelectStock, apiBase, onStocksUp
     return () => {
       window.clearTimeout(timer)
     }
-  }, [apiBase, editorMode, editorOpen, form.name])
+  }, [apiBase, editorMode, editorOpen, form.name, onUnauthorized])
 
   useEffect(() => {
     if (!editorOpen || editorMode !== 'edit') {
-      return
+      return undefined
     }
     const code = form.code.trim()
     if (!code) {
-      return
+      return undefined
     }
-    void refreshPriceDividendByCode(code)
+    const timer = window.setTimeout(() => {
+      void refreshPriceDividendByCode(code)
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [editorMode, editorOpen, form.code])
 
   const parsePayloadFromForm = () => {
@@ -260,11 +274,7 @@ function StockList({ stocks, selectedStockId, onSelectStock, apiBase, onStocksUp
     try {
       const path = editorMode === 'add' ? '/positions/add' : '/positions/modify'
       const body = JSON.stringify([parsed.payload])
-      const response = await fetch(`${apiBase}${path}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-      })
+      const response = await fetchWithBearer(apiBase, path, { method: 'POST', body }, onUnauthorized)
       if (!response.ok) {
         let detail = `请求失败: ${response.status}`
         try {
@@ -299,11 +309,15 @@ function StockList({ stocks, selectedStockId, onSelectStock, apiBase, onStocksUp
     if (!deleteTarget) return
     setDeleteSubmitting(true)
     try {
-      const response = await fetch(`${apiBase}/positions/delete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify([{ code: deleteTarget.code }]),
-      })
+      const response = await fetchWithBearer(
+        apiBase,
+        '/positions/delete',
+        {
+          method: 'POST',
+          body: JSON.stringify([{ code: deleteTarget.code }]),
+        },
+        onUnauthorized,
+      )
       if (!response.ok) {
         let detail = `请求失败: ${response.status}`
         try {

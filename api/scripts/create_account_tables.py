@@ -49,9 +49,24 @@ def main() -> None:
         for model in TABLES:
             table = model.__table__
             table.create(bind=conn, checkfirst=True)
-            _apply_pg_comments_for_table(conn, table)
             qname = _pg_qualified_table_name(table)
             print(f"已创建或确认存在表: {qname}")
+
+        conn.execute(
+            text(
+                "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS access_token_version INTEGER NOT NULL DEFAULT 0"
+            )
+        )
+        conn.execute(
+            text(
+                "COMMENT ON COLUMN accounts.access_token_version IS "
+                "'access 令牌版本；刷新或登出后递增，JWT 内 ver 须一致'"
+            )
+        )
+        print("已确认列 accounts.access_token_version 存在（可重复执行）。")
+
+        for model in TABLES:
+            _apply_pg_comments_for_table(conn, model.__table__)
 
     print("已为上述表及带 comment 的列写入 PostgreSQL 备注（COMMENT ON，可重复执行刷新）。")
 

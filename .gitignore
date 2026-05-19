@@ -73,3 +73,6 @@ api/invest_assistant.db
 api/core/akshare/data/
 api/data/vanna_stock/
 api/tests/test_invest_assistant.db
+
+# curl 自测等产生的临时 JSON（见 api/scripts/test_auth_flow_curl.txt）
+api/tmp/
