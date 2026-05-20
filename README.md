@@ -17,9 +17,12 @@
 | 路径 | 说明 |
 |------|------|
 | `api/` | 后端：控制器、服务、模型、AI、Celery 任务、`core/akshare` 数据更新 |
+| `api/core/rag/` | 财报复盘 RAG 流水线（PDF/MinerU → 分块 → 向量库 → 问答） |
+| `api/data/stock_data/` | RAG 本地数据集根目录（PDF、`subset.csv`、`debug_data/`、`databases/` 等，默认不入库） |
 | `web/` | 前端：持仓 / 透视盈余 / 投资助手 / 投研数问 / 定时任务 |
 | `scripts/` | 项目级启动脚本（`start-api.sh`、`start-web.sh`） |
 | `docs/` | API 与页面说明文档（含 `docs/api/auth-api.md`） |
+| `.vscode/launch.json` | Cursor/VS Code 调试配置（API、Celery、RAG Pipeline 等） |
 
 ## 运行环境
 
@@ -110,6 +113,7 @@ python3 scripts/create_stock_financial_report_table.py
 - 地址：`http://127.0.0.1:8000`
 - 健康检查：`GET /health`
 - 调试：`DEBUG=1 ./scripts/start-api.sh`（debugpy，默认端口 5678）
+- IDE 调试：在 **运行和调试** 中选择对应配置后 F5（见下文「本地调试（launch.json）」）
 
 ### 6) 启动前端
 
@@ -145,6 +149,50 @@ celery -A extensions.ext_celery:celery_app call tasks.stock.update_position_basi
 ```
 
 本地调试 Worker 可使用 `--pool=solo`；定时链路中 `run_scheduled_task` 会再投递子任务，solo 单进程已通过 `apply` 同步执行子任务避免死锁。
+
+## RAG 财报复盘流水线（`api/core/rag`）
+
+离线脚本，用于将上市公司年报 PDF 解析、分块并写入向量库，再按 `questions.json` 做检索问答（尚未接入 FastAPI 路由）。
+
+### 数据目录
+
+默认根路径为 **`api/data/stock_data`**（由 `pipeline.py` 中 `Path(__file__).resolve().parent.parent.parent / "data" / "stock_data"` 解析）。常用子目录：
+
+| 路径（相对 `stock_data`） | 说明 |
+|---------------------------|------|
+| `subset.csv` | 报告元数据（文件名、公司名、sha1 等） |
+| `questions.json` | 评测/问答题目列表 |
+| `pdf_reports/` | 原始 PDF |
+| `debug_data/02_merged_reports/` | MinerU 合并后的结构化 JSON |
+| `debug_data/03_reports_markdown/` | 导出的 Markdown |
+| `databases/chunked_reports/` | 分块后的 JSON |
+| `databases/vector_dbs/` | FAISS 向量索引 |
+
+财报等大文件请放在本地 `api/data/stock_data`，勿提交仓库。
+
+### 运行方式
+
+在 **`api/`** 目录、已安装 `requirements.txt` 且配置好 `DASHSCOPE_API_KEY`（向量化）等环境变量后：
+
+```bash
+cd api
+python -m core.rag.pipeline
+```
+
+`pipeline.py` 末尾 `if __name__ == "__main__"` 中可按步骤取消注释，例如：`export_reports_to_markdown`、`chunk_reports2`、`create_vector_dbs`、`process_questions`。包内模块使用相对导入（`from .pdf_parsing import ...`），**不要**再使用旧项目里的 `from src.*`。
+
+### 本地调试（launch.json）
+
+`.vscode/launch.json` 已提供：
+
+| 配置名 | 说明 |
+|--------|------|
+| `API: Uvicorn (launch)` | 启动 FastAPI（`cwd=api`） |
+| `API: Attach (scripts/start-api.sh DEBUG=1)` | 附加到 debugpy 5678 |
+| **`RAG: Pipeline (core.rag.pipeline)`** | 调试 RAG 流水线（等价于 `python -m core.rag.pipeline`） |
+| `Celery Worker (solo)` | 单进程调试 Worker |
+
+调试 RAG 时选择 **RAG: Pipeline**，在 `api/core/rag/` 或 `api/core/rag/ingestion.py` 等处设断点后 F5；解释器需与终端一致（如 conda `deepstudy`）。
 
 ## 前端页面
 
