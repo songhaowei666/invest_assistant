@@ -26,6 +26,7 @@ WORKSPACE = _api_dir / ".nanobot"
 from configs.config import settings
 from nanobot_main.agent.hook import AgentHook, AgentHookContext
 from nanobot_main.agent.loop import AgentLoop
+from nanobot_main.agent.skills import SkillsLoader
 from nanobot_main.bus.queue import MessageBus
 from nanobot_main.config.loader import load_config
 from nanobot_main.nanobot import Nanobot
@@ -49,8 +50,11 @@ def build_bot() -> Nanobot:
     config.providers.custom.api_base = settings.OPENAI_BASE_URL
     config.agents.defaults.workspace = str(WORKSPACE)
 # config.agents.defaults.model = "qwen3.5-plus"
-    config.agents.defaults.model = "gpt-4-turbo"
+    config.agents.defaults.model = "gpt-3.5-turbo"
     config.agents.defaults.provider = "custom"
+
+    # workspace 技能目录：替代 .nanobot/skills，builtin 仍用 nanobot_main/skills
+    workspace_skills_dir = _api_dir / "skills"
     # mcp_servers = dict(config.tools.mcp_servers or {})
     # tavily_mcp = mcp_servers.get("tavily-mcp")
     # if tavily_mcp is not None:
@@ -72,6 +76,12 @@ def build_bot() -> Nanobot:
         restrict_to_workspace=False,
         # mcp_servers=mcp_servers,
         timezone=defaults.timezone,
+        disabled_skills=defaults.disabled_skills or None,
+    )
+    loop.context.skills = SkillsLoader(
+        WORKSPACE,
+        workspace_skills_dir=workspace_skills_dir,
+        disabled_skills=set(defaults.disabled_skills) if defaults.disabled_skills else None,
     )
 
     image_dir = WORKSPACE / "image_show"
@@ -96,7 +106,7 @@ if __name__ == "__main__":
     bot = build_bot()
     print("正在调用模型（首包可能需数十秒至数分钟，请稍候）...", flush=True)
     result = asyncio.run(
-        bot.run("你好，我是你的股票投资顾问，请告诉我你的投资目标和风险偏好")
+        bot.run("你有哪些技能")
     )
     print("----- 模型回复 -----", flush=True)
     print(result.content or "(空回复)", flush=True)
